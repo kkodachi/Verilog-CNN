@@ -12,39 +12,68 @@ module MaxPool_Forward #(
     output reg done
 );
 
-    integer i, j;
+    reg [9:0] i, j;
     reg [15:0] max; // max value within the window
     reg [9:0] row, col;
+    reg [1:0] state;
+    localparam IDLE = 2'b00, INIT = 2'b01, WORK = 2'b10;
 
     always @(posedge clk) begin
         if (rst) begin
             done <= 0;
             row <= 0;
             col <= 0;
-        end else if (!done && start) begin
-            max = 0;
-            // find the max value in the window
-            for (i = 0; i < KERNEL; i = i + 1) begin
-                for (j = 0; j < KERNEL; j = j + 1) begin
-                    if (featureMap[row*STRIDE + i][col*STRIDE + j] > max) begin
-                        max = featureMap[row*STRIDE + i][col*STRIDE + j];
+            i <= 0;
+            j <= 0;
+            max <= 0;
+            state <= IDLE;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (start) begin
+                        state <= INIT;
                     end
                 end
-            end
-            
-            pooled_output[row][col] <= max;
 
-            // move window
-            if (col < (FM_width / STRIDE) - 1) begin
-                col <= col + 1;
-            end else begin
-                col <= 0;
-                if (row < (FM_height / STRIDE) - 1) begin
-                    row <= row + 1;
-                end else begin
-                    done <= 1;
+                INIT: begin
+                    i <= 0;
+                    j <= 0;
+                    row <= 0;
+                    col <= 0;
+                    max <= 0;
+                    state <= WORK;
                 end
-            end
+
+                WORK: begin
+                    if (featureMap[row*STRIDE + i][col*STRIDE + j] > max) begin
+                        max <= featureMap[row*STRIDE + i][col*STRIDE + j];
+                    end
+
+                    if (j < KERNEL - 1) begin
+                        j <= j + 1;
+                    end else if (i < KERNEL - 1) begin
+                        i <= i + 1;
+                        j <= 0;
+                    end else begin
+                        i <= 0;
+                        j <= 0;
+                        pooled_output[row][col] <= max;
+                        max <= 0;
+
+                        if (col < (FM_width / STRIDE) - 1) begin
+                            col <= col + 1;
+                        end else begin
+                            col <= 0;
+                            if (row < (FM_height / STRIDE) - 1) begin
+                                row <= row + 1;
+                            end else begin
+                                done <= 1;
+                                state <= IDLE;
+                            end
+                        end
+                    end
+                end
+            endcase
         end
     end
 endmodule
@@ -64,55 +93,80 @@ module MaxPool_backward #(
     output reg done
 );
 
-    integer i, j;
     reg [15:0] max;
-    reg [9:0] max_x, max_y; // ind max value in featureMap window
-    reg [9:0] row, col; 
+    reg [9:0] max_x, max_y, i, j; // ind max value in featureMap window
+    reg [9:0] row, col;
+    reg [1:0] state;
+    localparam IDLE = 2'b00, INIT = 2'b01, WORK = 2'b10;
 
     always @(posedge clk) begin
         if (rst) begin
             done <= 0;
             row <= 0;
             col <= 0;
-            // initialize input_error to 0 for each position in featureMap
-            for (i = 0; i < FM_width; i = i + 1) begin
-                for (j = 0; j < FM_height; j = j + 1) begin
-                    input_error[i][j] <= 0;
+            state <= IDLE;
+            row <= 0;
+            col <= 0;
+            max_x <= 0;
+            max_y <= 0;
+            i <= 0;
+            j <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (start) state <= INIT;
                 end
-            end
-        end
 
-        else if (!done && start) begin
-            // initialize max value and ind
-            max = 0;
-            max_x = 0;
-            max_y = 0;
+                INIT: begin
+                    // initialize input_error to 0 for each position in featureMap
+                    input_error[i][j] <= 0;
 
-            // find max value and ind within window
-            for (i = 0; i < KERNEL; i = i + 1) begin
-                for (j = 0; j < KERNEL; j = j + 1) begin
+                    if (j < FM_height - 1) begin
+                        j <= j + 1;
+                    end else if (i < FM_width - 1) begin
+                        j <= 0;
+                        i < i + 1;
+                    end else begin
+                        i <= 0;
+                        j <= 0;
+                        state <= WORK;
+                    end
+                end
+
+                WORK: begin
                     if (featureMap[row*STRIDE + i][col*STRIDE + j] > max) begin
                         max = featureMap[row*STRIDE + i][col*STRIDE + j];
                         max_x = row * STRIDE + i;
                         max_y = col * STRIDE + j;
                     end
-                end
-            end
 
-            // add output error to max location
-            input_error[max_x][max_y] <= input_error[max_x][max_y] + output_error[row][col];
+                    if (j < KERNEL - 1) begin
+                        j <= j + 1;
+                    end else if (i < KERNEL - 1) begin
+                        i <= i + 1;
+                        j <= 0;
+                    end else begin
+                        i <= 0;
+                        j <= 0;
+                        max_x <= 0;
+                        max_y <= 0;
+                        max <= 0;
+                        input_error[max_x][max_y] <= input_error[max_x][max_y] + output_error[row][col];
 
-            // move window
-            if (col < (FM_width / STRIDE) - 1) begin
-                col <= col + 1;
-            end else begin
-                col <= 0;
-                if (row < (FM_height / STRIDE) - 1) begin
-                    row <= row + 1;
-                end else begin
-                    done <= 1;
+                        if (col < (FM_width / STRIDE) - 1) begin
+                            col <= col + 1;
+                        end else begin
+                            col <= 0;
+                            if (row < (FM_height / STRIDE) - 1) begin
+                                row <= row + 1;
+                            end else begin
+                                done <= 1;
+                                state <= IDLE;
+                            end
+                        end
+                    end
                 end
-            end
+            endcase
         end
     end
 endmodule
