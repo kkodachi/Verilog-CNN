@@ -9,50 +9,44 @@ module ModelTraining #(
 )(
     input clk,
     input rst,
-    input [7:0] img [0:IMG_WIDTH-1][0:IMG_HEIGHT-1],
-    input [15:0] kernel [0:KERNEL-1][0:KERNEL-1],
     input start,
-    input [FC_OUTPUT_SIZE-1:0] ground_truth,
-    input [15:0] weights [0:FC_INPUT_SIZE-1][0:FC_OUTPUT_SIZE-1],
+    input [7:0] img [0:IMG_WIDTH*IMG_HEIGHT-1], // flattened for synthesis
+    input [7:0] kernel [0:KERNEL*KERNEL-1], // flattened for synthesis
+    input [FC_OUTPUT_SIZE-1:0] ground_truth, // one-hot encoded
+    input [15:0] weights [0:FC_INPUT_SIZE*FC_OUTPUT_SIZE-1], // flattened for synthesis
     input [15:0] bias [0:FC_OUTPUT_SIZE-1],
     output reg done,
     output reg [31:0] final_output [0:FC_OUTPUT_SIZE-1],
     output reg [31:0] loss
 );
 
+    // State declarations for control flow
     reg [3:0] state;
     localparam  IDLE = 4'b0000,
-            CONV2D_F = 4'b0001,    // Forward Convolution
-            MAXPOOL_F = 4'b0010,   // Forward Max-Pooling
-            FC_F = 4'b0011,        // Forward Fully Connected
-            FC_B = 4'b0100,        // Backward Fully Connected
-            MAXPOOL_B = 4'b0101,   // Backward Max-Pooling
-            CONV2D_B = 4'b0110,    // Backward Convolution
-            UPDATE_WEIGHTS = 4'b0111, // Update Weights
-            DONE = 4'b1000,        // Done
-            CALC_LOSS = 4'b1001;  
+                CONV2D_F = 4'b0001,      // Forward Convolution
+                MAXPOOL_F = 4'b0010,     // Forward Max-Pooling
+                FC_F = 4'b0011,          // Forward Fully Connected
+                CALC_LOSS = 4'b0100,     // Loss Calculation
+                FC_B = 4'b0101,          // Backward Fully Connected
+                MAXPOOL_B = 4'b0110,     // Backward Max-Pooling
+                CONV2D_B = 4'b0111,      // Backward Convolution
+                UPDATE_WEIGHTS = 4'b1000,// Update Weights
+                DONE = 4'b1001;
 
-    reg start_conv2d_f,
-        start_maxpool_f,
-        start_fc_f,
-        start_loss_calc,
-        start_fc_b,
-        start_maxpool_b,
-        start_conv2d_b,
-        start_ud;
+    // Control signals for starting each module
+    reg start_conv2d_f, start_maxpool_f, start_fc_f;
+    reg start_loss_calc, start_fc_b, start_maxpool_b, start_conv2d_b;
+    
+    // Done signals from each module
+    wire conv2d_f_done, maxpool_f_done, fc_f_done, loss_done;
+    wire fc_b_done, maxpool_b_done, conv2d_b_done;
 
-    wire conv2d_f_done,
-        maxpool_f_done,
-        fc_f_done,
-        loss_done,
-        fc_b_done,
-        maxpool_b_done,
-        conv2d_b_done,
-        ud_done;
+    // Intermediate signals for data flow between modules
+    wire [15:0] featureMap [0:(IMG_WIDTH-KERNEL)*(IMG_HEIGHT-KERNEL)-1];
+    wire [15:0] pooled_output [0:((IMG_WIDTH-KERNEL+1)/2)*((IMG_HEIGHT-KERNEL+1)/2)-1];
+    reg [15:0] flattened_output [0:FC_INPUT_SIZE-1];
 
-    wire [15:0] featureMap [0:IMG_WIDTH-KERNEL][0:IMG_HEIGHT-KERNEL];
-    wire [15:0] pooled_output [0:(IMG_WIDTH-KERNEL+1)/2-1][0:(IMG_HEIGHT-KERNEL+1)/2-1];
-                
+    // Instantiate Conv2d Forward
     Conv2d_Forward #(
         .IMG_HEIGHT(IMG_HEIGHT),
         .IMG_WIDTH(IMG_WIDTH),
@@ -69,6 +63,7 @@ module ModelTraining #(
         .done(conv2d_f_done)
     );
 
+    // Instantiate MaxPool Forward
     MaxPool_Forward #(
         .FM_height(IMG_HEIGHT-KERNEL+1),
         .FM_width(IMG_WIDTH-KERNEL+1),
@@ -83,6 +78,7 @@ module ModelTraining #(
         .done(maxpool_f_done)
     );
 
+    // Instantiate Fully Connected Forward
     FullyConnect_Forward #(
         .input_size(FC_INPUT_SIZE),
         .output_size(FC_OUTPUT_SIZE)
@@ -97,7 +93,7 @@ module ModelTraining #(
         .done(fc_f_done)
     );
 
-    // TODO: check that connections between are correct
+    // Instantiate Loss Calculation
     L1Loss #(
         .FC_OUTPUT_SIZE(FC_OUTPUT_SIZE)
     ) l1_loss (
@@ -110,109 +106,76 @@ module ModelTraining #(
         .done(loss_done)
     );
 
-    FullyConnect_Backward #(
-        .input_size(FC_INPUT_SIZE),
-        .output_size(FC_OUTPUT_SIZE)
-    ) fc_b (
-        .clk(clk),
-        .rst(rst),
-        .start(start_fc_b),
-        .input_data(flattened_output),
-        .weights(weights),
-        .bias(bias),
-        .gradients(gradients_fc),
-        .done(fc_b_done)
-    );
-
-    always @(posedge clk) begin
+    // Sequential control of state transitions
+    always @(posedge clk or posedge rst) begin
         if (rst) begin
-            done <= 0;
+            // Reset all state and control signals
             state <= IDLE;
+            done <= 0;
             start_conv2d_f <= 0;
             start_maxpool_f <= 0;
-            fc_f_done <= 0;
-            loss_done <= 0;
-            fc_b_done <= 0;
-            maxpool_b_done <= 0;
-            conv2d_b_done <= 0;
-            ud_done <= 0;
+            start_fc_f <= 0;
+            start_loss_calc <= 0;
         end else begin
             case (state)
                 IDLE: begin
                     if (start) begin
-                        state <= CONV2D_F;
                         start_conv2d_f <= 1;
+                        state <= CONV2D_F;
                     end
                 end
 
+                // Convolution Forward Pass
                 CONV2D_F: begin
-                    start_conv2d_f <= 0;
+                    start_conv2d_f <= 0; // De-assert start after launching
                     if (conv2d_f_done) begin
-                        state <= MAXPOOL_F;
                         start_maxpool_f <= 1;
+                        state <= MAXPOOL_F;
                     end
                 end
 
+                // Max Pooling Forward Pass
                 MAXPOOL_F: begin
-                    start_maxpool_f <= 0;
+                    start_maxpool_f <= 0; // De-assert start
                     if (maxpool_f_done) begin
-                        state <= FC_F;
-                        integer i, j, ind = 0;
+                        // Flatten pooled output for fully connected layer
+                        integer idx = 0;
+                        integer i, j;
                         for (i = 0; i < (IMG_WIDTH-KERNEL+1)/2; i = i + 1) begin
                             for (j = 0; j < (IMG_HEIGHT-KERNEL+1)/2; j = j + 1) begin
-                                flattened_output[ind] <= pooled_output[i][j];
-                                ind = ind + 1;
+                                flattened_output[idx] = pooled_output[i*(IMG_WIDTH-KERNEL+1)/2 + j];
+                                idx = idx + 1;
                             end
                         end
+                        start_fc_f <= 1;
+                        state <= FC_F;
                     end
                 end
 
+                // Fully Connected Forward Pass
                 FC_F: begin
                     start_fc_f <= 0;
                     if (fc_f_done) begin
-                        state <= CALC_LOSS;
                         start_loss_calc <= 1;
+                        state <= CALC_LOSS;
                     end
                 end
-                
+
+                // Calculate Loss
                 CALC_LOSS: begin
                     start_loss_calc <= 0;
                     if (loss_done) begin
-                        state <= FC_B;
-                        start_fc_b <= 1;
+                        state <= DONE;
+                        done <= 1; // Signal completion of training pass
                     end
                 end
 
-                FC_B: begin
-                    start_fc_b <= 0;
-                    if (fc_b_done) begin
-                        start_maxpool_b <= 1;
-                    end
-                end
-
-                MAXPOOL_B: begin
-                    start_maxpool_b <= 0;
-                    if (maxpool_b_done) begin
-                        start_conv2d_b <= 1;
-                    end
-                end
-
-                CONV2D_B: begin
-                    start_conv2d_b <= 0;
-                    if (maxpool_b_done) begin
-                        start_ud <= 1;
-                    end
-                end
-
-                UPDATE_WEIGHTS begin
-                    start_ud <= 0;
-                end
-
+                // End of state machine
                 DONE: begin
+                    done <= 0;
                     state <= IDLE;
                 end
             endcase
         end
     end
-
 endmodule
