@@ -8,9 +8,9 @@ module Conv2d_Forward #(
     input clk,
     input rst,
     input start,
-    input [7:0] img [0:IMG_WIDTH-1][0:IMG_HEIGHT-1],
-    input [7:0] kernel [0:KERNEL-1][0:KERNEL-1],
-    output reg [15:0] featureMap [0:IMG_WIDTH-KERNEL+1][0:IMG_HEIGHT-KERNEL+1],
+    input [7:0] img [0:(IMG_WIDTH * IMG_HEIGHT) - 1], // flattened for synthesis
+    input [7:0] kernel [0:(KERNEL * KERNEL) - 1], // flattened for synthesis
+    output reg [15:0] featureMap [0:((IMG_WIDTH-KERNEL+1) * (IMG_HEIGHT-KERNEL+1)) - 1], // flattened for synthesis
     output reg done
 );
     reg [15:0] sum;
@@ -39,8 +39,8 @@ module Conv2d_Forward #(
                 end
 
                 WORK: begin
-                    sum <= sum + img[row + i][col + j] * kernel[i][j];
-                    // increment i and j to next index of feature map
+                    sum <= sum + img[(row + i) * IMG_WIDTH + (col + j)] * kernel[i * KERNEL + j];
+                    
                     if (j < KERNEL - 1) begin
                         j <= j + 1;
                     end else if (i < KERNEL - 1) begin
@@ -50,7 +50,7 @@ module Conv2d_Forward #(
                         i <= 0;
                         j <= 0;
 
-                        featureMap[row][col] <= sum;
+                        featureMap[row * (IMG_WIDTH - KERNEL + 1) + col] <= sum;
                         sum <= 0;
 
                         if (col < IMG_WIDTH - KERNEL) begin
@@ -81,11 +81,11 @@ module Conv2d_Backward #(
     input clk,
     input rst,
     input start,
-    input [7:0] img [0:IMG_WIDTH-1][0:IMG_HEIGHT-1],
-    input [7:0] kernel [0:KERNEL-1][0:KERNEL-1],
-    input [15:0] output_error [0:IMG_WIDTH-KERNEL+1][0:IMG_HEIGHT-KERNEL+1],
-    output reg [7:0] weight_grad [0:KERNEL-1][0:KERNEL-1],
-    output reg [7:0] input_grad [0:IMG_WIDTH-1][0:IMG_HEIGHT-1],
+    input [7:0] img [0:(IMG_WIDTH * IMG_HEIGHT) - 1], // flattened for synthesis
+    input [7:0] kernel [0:(KERNEL * KERNEL) - 1],// flattened for synthesis
+    input [15:0] output_error [0:((IMG_WIDTH-KERNEL+1) * (IMG_HEIGHT-KERNEL+1)) - 1], // flattened for synthesis
+    output reg [7:0] weight_grad [0:(KERNEL * KERNEL) - 1], // flattened for synthesis
+    output reg [7:0] input_grad [0:(IMG_WIDTH * IMG_HEIGHT) - 1], // flattened for synthesis
     output reg done
 );
     reg [15:0] weight_sum, input_sum;
@@ -111,11 +111,10 @@ module Conv2d_Backward #(
                 end
 
                 INIT: begin
-                    if (i < KERNEL - 1 && j < KERNEL - 1) begin
-                        weight_grad[i][j] <= 0;
+                    if (i < KERNEL && j < KERNEL) begin
+                        weight_grad[i * KERNEL + j] <= 0;
                     end
-
-                    input_grad[i][j] <= 0;
+                    input_grad[(i * IMG_WIDTH) + j] <= 0;
 
                     if (j < IMG_WIDTH - 1) begin
                         j <= j + 1;
@@ -130,8 +129,10 @@ module Conv2d_Backward #(
                 end
 
                 WORK: begin
-                    weight_grad[i][j] <= weight_grad[i][j] + (img[row + i][col + j] * output_error[row][col]);
-                    input_grad[row + i][col + j] <= input_grad[row + i][col + j] + (kernel[i][j] * output_error[row][col]);
+                    weight_grad[i * KERNEL + j] <= weight_grad[i * KERNEL + j] + 
+                                                  (img[(row + i) * IMG_WIDTH + (col + j)] * output_error[row * (IMG_WIDTH - KERNEL + 1) + col]);
+                    input_grad[(row + i) * IMG_WIDTH + (col + j)] <= input_grad[(row + i) * IMG_WIDTH + (col + j)] + 
+                                                                    (kernel[i * KERNEL + j] * output_error[row * (IMG_WIDTH - KERNEL + 1) + col]);
                     
                     if (j < KERNEL - 1) begin
                         j <= j + 1;

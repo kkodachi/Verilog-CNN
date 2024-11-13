@@ -4,8 +4,8 @@ module L1Loss #(
     input clk,
     input rst,
     input start,
-    input [31:0] predicted_probs [0:FC_OUTPUT_SIZE-1],  // Predicted values
-    input [FC_OUTPUT_SIZE-1:0] ground_truth,  // Ground truth labels (one-hot encoded)
+    input [31:0] predicted_probs [0:FC_OUTPUT_SIZE-1],  // predicted values
+    input [FC_OUTPUT_SIZE-1:0] ground_truth,  // ground truth labels (one-hot encoded)
     output reg [31:0] loss,
     output reg done
 );
@@ -13,6 +13,7 @@ module L1Loss #(
     reg [31:0] sum_loss;
     reg [3:0] state;
     reg [9:0] i;
+    reg [31:0] diff;
     localparam IDLE = 3'b000,
                INIT = 3'b001,
                WORK = 3'b010;
@@ -31,6 +32,7 @@ module L1Loss #(
                         state <= INIT;
                         sum_loss <= 0;
                         i <= 0;
+                        done <= 0;
                     end
                 end
 
@@ -40,7 +42,12 @@ module L1Loss #(
 
                 WORK: begin
                     if (ground_truth[i] == 1'b1) begin
-                        sum_loss <= sum_loss + abs(predicted_probs[i] - 32'h3F800000);
+                        // take abs of the difference
+                        diff = predicted_probs[i] - 32'h3F800000;
+                        if (diff[31] == 1'b1) // check negative
+                            sum_loss <= sum_loss + (~diff + 1); // two's complement for abs 
+                        else
+                            sum_loss <= sum_loss + diff;
                     end
                     if (i < FC_OUTPUT_SIZE - 1) begin
                         i <= i + 1;
@@ -53,15 +60,4 @@ module L1Loss #(
             endcase
         end
     end
-
-    function [31:0] abs;
-        input [31:0] value;
-        begin
-            if (value[31] == 1'b1) // if neg
-                abs = ~value + 1;
-            else
-                abs = value;
-        end
-    endfunction
-
 endmodule

@@ -7,8 +7,8 @@ module MaxPool_Forward #(
     input clk,
     input rst,
     input start,
-    input [15:0] featureMap [0:FM_width-1][0:FM_height-1], // featureMap from Conv2d
-    output reg [15:0] pooled_output[0:FM_width/STRIDE-1][0:FM_height/STRIDE-1], // max values from each window
+    input [15:0] featureMap [0:FM_width*FM_height-1], // flattened for synthesis
+    output reg [15:0] pooled_output [0:(FM_width/STRIDE)*(FM_height/STRIDE)-1], // flattened for synthesis
     output reg done
 );
 
@@ -45,8 +45,8 @@ module MaxPool_Forward #(
                 end
 
                 WORK: begin
-                    if (featureMap[row*STRIDE + i][col*STRIDE + j] > max) begin
-                        max <= featureMap[row*STRIDE + i][col*STRIDE + j];
+                    if (featureMap[(row*STRIDE + i) * FM_width + (col*STRIDE + j)] > max) begin
+                        max <= featureMap[(row*STRIDE + i) * FM_width + (col*STRIDE + j)];
                     end
 
                     if (j < KERNEL - 1) begin
@@ -57,7 +57,7 @@ module MaxPool_Forward #(
                     end else begin
                         i <= 0;
                         j <= 0;
-                        pooled_output[row][col] <= max;
+                        pooled_output[row * (FM_width / STRIDE) + col] <= max;
                         max <= 0;
 
                         if (col < (FM_width / STRIDE) - 1) begin
@@ -78,7 +78,7 @@ module MaxPool_Forward #(
     end
 endmodule
 
-module MaxPool_backward #(
+module MaxPool_Backward #(
     parameter FM_height = 62, // feature map height after Conv2d (64 - 3 + 1)
     parameter FM_width = 62, // feature map width after Conv2d (64 - 3 + 1)
     parameter KERNEL = 2, // pooling window size
@@ -87,14 +87,13 @@ module MaxPool_backward #(
     input clk,
     input rst,
     input start,
-    input [15:0] featureMap [0:FM_width-1][0:FM_height-1], // featureMap from Conv2d
-    input [15:0] output_error [0:FM_width/STRIDE-1][0:FM_height/STRIDE-1], // errors from the MaxPool output
-    output reg [15:0] input_error [0:FM_width-1][0:FM_height-1], // gradients for feature map
-    output reg done
+    input [15:0] featureMap [0:FM_width*FM_height-1], // flattened for synthesis
+    input [15:0] output_error [0:(FM_width/STRIDE)*(FM_height/STRIDE)-1], // flattened for synthesis
+    output reg [15:0] input_error [0:FM_width*FM_height-1], // flattened for synthesis
 );
 
     reg [15:0] max;
-    reg [9:0] max_x, max_y, i, j; // ind max value in featureMap window
+    reg [9:0] max_x, max_y, i, j; // indices of max value in featureMap window
     reg [9:0] row, col;
     reg [1:0] state;
     localparam IDLE = 2'b00, INIT = 2'b01, WORK = 2'b10;
@@ -105,8 +104,6 @@ module MaxPool_backward #(
             row <= 0;
             col <= 0;
             state <= IDLE;
-            row <= 0;
-            col <= 0;
             max_x <= 0;
             max_y <= 0;
             i <= 0;
@@ -118,14 +115,13 @@ module MaxPool_backward #(
                 end
 
                 INIT: begin
-                    // initialize input_error to 0 for each position in featureMap
-                    input_error[i][j] <= 0;
+                    input_error[i * FM_width + j] <= 0;
 
                     if (j < FM_height - 1) begin
                         j <= j + 1;
                     end else if (i < FM_width - 1) begin
                         j <= 0;
-                        i < i + 1;
+                        i <= i + 1;
                     end else begin
                         i <= 0;
                         j <= 0;
@@ -134,8 +130,8 @@ module MaxPool_backward #(
                 end
 
                 WORK: begin
-                    if (featureMap[row*STRIDE + i][col*STRIDE + j] > max) begin
-                        max = featureMap[row*STRIDE + i][col*STRIDE + j];
+                    if (featureMap[(row*STRIDE + i) * FM_width + (col*STRIDE + j)] > max) begin
+                        max = featureMap[(row*STRIDE + i) * FM_width + (col*STRIDE + j)];
                         max_x = row * STRIDE + i;
                         max_y = col * STRIDE + j;
                     end
@@ -151,7 +147,7 @@ module MaxPool_backward #(
                         max_x <= 0;
                         max_y <= 0;
                         max <= 0;
-                        input_error[max_x][max_y] <= input_error[max_x][max_y] + output_error[row][col];
+                        input_error[max_x * FM_width + max_y] <= input_error[max_x * FM_width + max_y] + output_error[row * (FM_width / STRIDE) + col];
 
                         if (col < (FM_width / STRIDE) - 1) begin
                             col <= col + 1;

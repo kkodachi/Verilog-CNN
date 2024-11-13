@@ -6,7 +6,7 @@ module FullyConnect_Forward #(
     input rst,
     input start,
     input [15:0] input_data [0:input_size-1],
-    input [15:0] weights [0:input_size-1][0:output_size-1], // matrix of weights
+    input [15:0] weights [0:input_size*output_size-1], // flattened for synthesis
     input [15:0] bias [0:output_size-1],
     output reg [31:0] output_data [0:output_size-1], // fully connected output
     output reg done
@@ -35,19 +35,21 @@ module FullyConnect_Forward #(
                 end
 
                 WORK: begin
-                    sum <= sum + input_data[i] * weights[i][j];
+                    sum <= sum + input_data[i] * weights[i + j * input_size];
 
-                    if (i < output_size - 1) begin
+                    if (i < input_size - 1) begin
                         i <= i + 1;
-                    end else if (j < input_size - 1) begin
-                        sum <= 0;
-                        j <= j + 1;
-                        i <= 0;
-                        output_data[j] <= sum + bias[j];
                     end else begin
                         output_data[j] <= sum + bias[j];
-                        state <= IDLE;
-                        done <= 1;
+                        sum <= 0;
+                        i <= 0;
+
+                        if (j < output_size - 1) begin
+                            j <= j + 1;
+                        end else begin
+                            state <= IDLE;
+                            done <= 1;
+                        end
                     end
                 end
             endcase
@@ -65,10 +67,10 @@ module FullyConnect_Backward #(
     input [15:0] input_data [0:input_size-1],
     input [31:0] output_data [0:output_size-1], // fully connected output
     input [15:0] lossGrad_output [0:output_size-1],
-    input [15:0] weights [0:input_size-1][0:output_size-1], // matrix of weights
-    output reg [15:0] lossGrad_weights [0:output_size-1][0:input_size-1],
+    input [15:0] weights [0:input_size*output_size-1], // flattened for synthesis
+    output reg [15:0] lossGrad_weights [0:output_size*input_size-1],
     output reg [15:0] lossGrad_bias [0:output_size-1],
-    output reg [15:0] lossGrad_input [0:input_size-1], // Gradients for input
+    output reg [15:0] lossGrad_input [0:input_size-1], // grad for input
     output reg done
 );
     reg [9:0] i, j, sum_i, sum_j;
@@ -99,8 +101,8 @@ module FullyConnect_Backward #(
 
                 WORK: begin
                     lossGrad_bias[i] <= lossGrad_output[i];
-                    lossGrad_weights[j][i] <= lossGrad_output[i] * input_data[j];
-                    sum = sum + lossGrad_output[sum_i] * weights[sum_j][sum_i];
+                    lossGrad_weights[i * input_size + j] <= lossGrad_output[i] * input_data[j];
+                    sum = sum + lossGrad_output[sum_i] * weights[sum_i * input_size + sum_j];
                     
                     if (j < input_size - 1) begin
                         j <= j + 1;
