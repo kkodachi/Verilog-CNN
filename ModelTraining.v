@@ -27,19 +27,13 @@ module ModelTraining #(
                 MAXPOOL_F = 4'b0010,     // Forward Max-Pooling
                 FC_F = 4'b0011,          // Forward Fully Connected
                 CALC_LOSS = 4'b0100,     // Loss Calculation
-                FC_B = 4'b0101,          // Backward Fully Connected
-                MAXPOOL_B = 4'b0110,     // Backward Max-Pooling
-                CONV2D_B = 4'b0111,      // Backward Convolution
-                UPDATE_WEIGHTS = 4'b1000,// Update Weights
                 DONE = 4'b1001;
 
     // Control signals for starting each module
-    reg start_conv2d_f, start_maxpool_f, start_fc_f;
-    reg start_loss_calc, start_fc_b, start_maxpool_b, start_conv2d_b;
+    reg start_conv2d_f, start_maxpool_f, start_fc_f, start_loss_calc;
     
     // Done signals from each module
     wire conv2d_f_done, maxpool_f_done, fc_f_done, loss_done;
-    wire fc_b_done, maxpool_b_done, conv2d_b_done;
 
     // Intermediate signals for data flow between modules
     wire [15:0] featureMap [0:(IMG_WIDTH-KERNEL)*(IMG_HEIGHT-KERNEL)-1];
@@ -116,10 +110,12 @@ module ModelTraining #(
             start_maxpool_f <= 0;
             start_fc_f <= 0;
             start_loss_calc <= 0;
+            $display("ModelTraining: Resetting...");
         end else begin
             case (state)
                 IDLE: begin
                     if (start) begin
+                        $display("ModelTraining: Starting training process...");
                         start_conv2d_f <= 1;
                         state <= CONV2D_F;
                     end
@@ -129,6 +125,7 @@ module ModelTraining #(
                 CONV2D_F: begin
                     start_conv2d_f <= 0; // De-assert start after launching
                     if (conv2d_f_done) begin
+                        $display("ModelTraining: Convolution forward pass done");
                         start_maxpool_f <= 1;
                         state <= MAXPOOL_F;
                     end
@@ -138,6 +135,7 @@ module ModelTraining #(
                 MAXPOOL_F: begin
                     start_maxpool_f <= 0; // De-assert start
                     if (maxpool_f_done) begin
+                        $display("ModelTraining: Max pooling forward pass done");
                         // Flatten pooled output for fully connected layer
                         integer idx = 0;
                         integer i, j;
@@ -156,6 +154,7 @@ module ModelTraining #(
                 FC_F: begin
                     start_fc_f <= 0;
                     if (fc_f_done) begin
+                        $display("ModelTraining: Fully connected forward pass done");
                         start_loss_calc <= 1;
                         state <= CALC_LOSS;
                     end
@@ -165,14 +164,15 @@ module ModelTraining #(
                 CALC_LOSS: begin
                     start_loss_calc <= 0;
                     if (loss_done) begin
+                        $display("ModelTraining: Loss calculation complete. Loss: %d", loss);
                         state <= DONE;
-                        done <= 1; // Signal completion of training pass
                     end
                 end
 
-                // End of state machine
+                // End of training process
                 DONE: begin
-                    done <= 0;
+                    $display("ModelTraining: Training process completed.");
+                    done <= 1;
                     state <= IDLE;
                 end
             endcase
