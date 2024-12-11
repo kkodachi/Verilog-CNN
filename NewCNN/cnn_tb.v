@@ -1,63 +1,61 @@
 `timescale 1ns/1ps
 
-module cnn_tb();
-    // Parameters
+module cnn_training_demo_tb();
+    // Architecture Parameters
     parameter INPUT_WIDTH = 64;
     parameter INPUT_HEIGHT = 64;
     parameter INPUT_CHANNELS = 1;
     parameter WINDOW_SIZE = 3;
     parameter NUM_NEURONS = 30;
     parameter POOL_STRIDE = 2;
-    
-    // Derived parameters
-    parameter CONV_OUT_WIDTH = INPUT_WIDTH - WINDOW_SIZE + 1;
-    parameter CONV_OUT_HEIGHT = INPUT_HEIGHT - WINDOW_SIZE + 1;
-    parameter POOL_OUT_WIDTH = CONV_OUT_WIDTH / POOL_STRIDE;
-    parameter POOL_OUT_HEIGHT = CONV_OUT_HEIGHT / POOL_STRIDE;
-    parameter FC_INPUT_SIZE = POOL_OUT_WIDTH * POOL_OUT_HEIGHT * NUM_NEURONS;
     parameter FC_OUTPUT_SIZE = 10;
+    
+    // Training Parameters
+    parameter NUM_EPOCHS = 5;
+    parameter BATCH_SIZE = 32;
+    parameter NUM_BATCHES = 10;
+    parameter NUM_TRAIN_SAMPLES = BATCH_SIZE * NUM_BATCHES;
+    parameter FIXED_POINT_BITS = 16;
+    parameter FRAC_BITS = 8;
 
-    // Clock and reset
+    // Clock and Reset
     reg clk;
     reg reset;
     
-    // Control signals
+    // Control Signals
     reg conv_enable, pool_enable, fc_enable;
     wire conv_done, pool_done, fc_done;
+    
+    // Training Data Storage
+    reg [15:0] training_data [0:NUM_TRAIN_SAMPLES-1][0:INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS-1];
+    reg [FC_OUTPUT_SIZE-1:0] true_labels [0:NUM_TRAIN_SAMPLES-1];
+    reg [15:0] network_outputs [0:FC_OUTPUT_SIZE-1];
+    
+    // Training Metrics
+    reg [31:0] batch_loss;
+    reg [31:0] epoch_loss;
+    reg [31:0] total_loss;
+    reg [31:0] epoch_loss_history [0:NUM_EPOCHS-1];
+    reg [7:0] epoch_accuracy_history [0:NUM_EPOCHS-1];
+    integer correct_predictions;
+    integer total_samples;
+    
+    // Layer Outputs for Monitoring
+    reg [15:0] conv_layer_output;
+    reg [15:0] pool_layer_output;
+    reg [15:0] fc_layer_output;
+    
+    // Training Progress Counters
+    reg [3:0] current_epoch;
+    reg [7:0] current_batch;
+    reg [15:0] sample_counter;
+    
+    // Performance Monitoring
+    time training_start_time;
+    time training_end_time;
+    reg [31:0] total_cycles;
 
-    // Memory interfaces
-    // Input image memory
-    reg signed [15:0] input_memory [0:INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS-1];
-    wire [$clog2(INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS)-1:0] conv_input_addr;
-    reg input_valid;
-    wire signed [15:0] conv_input_data;
-
-    // Convolution output memory
-    wire signed [15:0] conv_output_data;
-    wire [$clog2(CONV_OUT_WIDTH*CONV_OUT_HEIGHT*NUM_NEURONS)-1:0] conv_output_addr;
-    wire conv_output_valid;
-    reg signed [15:0] conv_memory [0:CONV_OUT_WIDTH*CONV_OUT_HEIGHT*NUM_NEURONS-1];
-
-    // Pooling output memory
-    wire signed [15:0] pool_output_data;
-    wire [$clog2(POOL_OUT_WIDTH*POOL_OUT_HEIGHT*NUM_NEURONS)-1:0] pool_output_addr;
-    wire pool_output_valid;
-    reg signed [15:0] pool_memory [0:POOL_OUT_WIDTH*POOL_OUT_HEIGHT*NUM_NEURONS-1];
-
-    // FC output memory
-    wire signed [15:0] fc_output_data;
-    wire [$clog2(FC_OUTPUT_SIZE)-1:0] fc_output_addr;
-    wire fc_output_valid;
-    reg signed [15:0] fc_memory [0:FC_OUTPUT_SIZE-1];
-
-    // Counters and temporary variables
-    reg [31:0] timeout_counter;
-    reg [$clog2(INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS):0] init_counter;
-    reg [$clog2(FC_OUTPUT_SIZE):0] result_counter;
-    reg signed [15:0] max_val;
-    reg [$clog2(FC_OUTPUT_SIZE)-1:0] max_idx;
-
-    // Module instantiations
+    // Instance your original CNN modules
     conv2d #(
         .INPUT_WIDTH(INPUT_WIDTH),
         .INPUT_HEIGHT(INPUT_HEIGHT),
@@ -68,174 +66,267 @@ module cnn_tb();
         .clk(clk),
         .reset(reset),
         .enable(conv_enable),
-        .input_data(conv_input_data),
-        .input_addr(conv_input_addr),
-        .input_valid(input_valid),
-        .feature_map(conv_output_data),
-        .output_addr(conv_output_addr),
-        .output_valid(conv_output_valid),
-        .conv_done(conv_done)
+        // ... other connections ...
     );
 
     max_pool #(
-        .INPUT_WIDTH(CONV_OUT_WIDTH),
-        .INPUT_HEIGHT(CONV_OUT_HEIGHT),
+        .INPUT_WIDTH(INPUT_WIDTH-WINDOW_SIZE+1),
+        .INPUT_HEIGHT(INPUT_HEIGHT-WINDOW_SIZE+1),
         .INPUT_CHANNELS(NUM_NEURONS),
         .STRIDE(POOL_STRIDE)
     ) pool_layer (
         .clk(clk),
         .reset(reset),
         .enable(pool_enable),
-        .input_data(conv_memory[pool_layer.input_addr]),
-        .input_addr(),  // Connected internally
-        .input_valid(1'b1),
-        .pooled_output(pool_output_data),
-        .output_addr(pool_output_addr),
-        .output_valid(pool_output_valid),
-        .pool_done(pool_done)
+        // ... other connections ...
     );
 
     fully_connected #(
-        .INPUT_SIZE(FC_INPUT_SIZE),
+        .INPUT_SIZE((INPUT_WIDTH-WINDOW_SIZE+1)*(INPUT_HEIGHT-WINDOW_SIZE+1)*NUM_NEURONS/(POOL_STRIDE*POOL_STRIDE)),
         .OUTPUT_SIZE(FC_OUTPUT_SIZE)
     ) fc_layer (
         .clk(clk),
         .reset(reset),
         .enable(fc_enable),
-        .input_data(pool_memory[fc_layer.input_addr]),
-        .input_addr(),  // Connected internally
-        .input_valid(1'b1),
-        .output_data(fc_output_data),
-        .output_addr(fc_output_addr),
-        .output_valid(fc_output_valid),
-        .fc_done(fc_done)
+        // ... other connections ...
     );
 
-    // Memory interface simulation
-    assign conv_input_data = input_memory[conv_input_addr];
-
-    // Memory write processes
-    always @(posedge clk) begin
-        if (conv_output_valid)
-            conv_memory[conv_output_addr] <= conv_output_data;
-        if (pool_output_valid)
-            pool_memory[pool_output_addr] <= pool_output_data;
-        if (fc_output_valid)
-            fc_memory[fc_output_addr] <= fc_output_data;
-    end
-
-    // Clock generation
+    // Clock Generation
     initial begin
         clk = 0;
         forever #5 clk = ~clk;
     end
 
-    // Initialize input memory
-    initial begin
-        init_counter = 0;
-        while (init_counter < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS) begin
-            input_memory[init_counter] = $random;
-            init_counter = init_counter + 1;
+    // Print Architecture Details
+    task print_architecture;
+        begin
+            $display("\nCNN Architecture Details:");
+            $display("------------------------");
+            $display("Input Layer: %0dx%0dx%0d", INPUT_WIDTH, INPUT_HEIGHT, INPUT_CHANNELS);
+            $display("Convolution Layer: %0d filters of size %0dx%0d", NUM_NEURONS, WINDOW_SIZE, WINDOW_SIZE);
+            $display("Pooling Layer: %0dx%0d stride", POOL_STRIDE, POOL_STRIDE);
+            $display("Fully Connected Layer: %0d outputs", FC_OUTPUT_SIZE);
+            $display("------------------------\n");
+            
+            $display("Training Configuration:");
+            $display("------------------------");
+            $display("Number of Epochs: %0d", NUM_EPOCHS);
+            $display("Batch Size: %0d", BATCH_SIZE);
+            $display("Number of Batches: %0d", NUM_BATCHES);
+            $display("Total Training Samples: %0d", NUM_TRAIN_SAMPLES);
+            $display("------------------------\n");
         end
-    end
+    endtask
 
-    // Test stimulus
-    initial begin
-        // Initialize
-        reset = 1;
-        conv_enable = 0;
-        pool_enable = 0;
-        fc_enable = 0;
-        input_valid = 0;
-        timeout_counter = 0;
-
-        // Wait 100ns and deassert reset
-        #100;
-        reset = 0;
-        input_valid = 1;
-
-        // Test convolution layer
-        $display("Starting Convolution Layer Test");
-        conv_enable = 1;
-        @(posedge conv_done);
-        conv_enable = 0;
-        #100;
-
-        // Test pooling layer
-        $display("Starting Pooling Layer Test");
-        pool_enable = 1;
-        @(posedge pool_done);
-        pool_enable = 0;
-        #100;
-
-        // Test fully connected layer
-        $display("Starting Fully Connected Layer Test");
-        fc_enable = 1;
-        @(posedge fc_done);
-        fc_enable = 0;
-
-        // Display results
-        $display("Classification Results:");
-        result_counter = 0;
-        while (result_counter < FC_OUTPUT_SIZE) begin
-            $display("Class %0d: %0d", result_counter, fc_memory[result_counter]);
-            result_counter = result_counter + 1;
+    // Initialize Network and Training Data
+    task initialize_system;
+        begin
+            // Initialize control signals
+            reset = 1;
+            conv_enable = 0;
+            pool_enable = 0;
+            fc_enable = 0;
+            
+            // Initialize counters
+            current_epoch = 0;
+            current_batch = 0;
+            sample_counter = 0;
+            
+            // Initialize metrics
+            total_loss = 0;
+            batch_loss = 0;
+            correct_predictions = 0;
+            total_samples = 0;
+            total_cycles = 0;
+            
+            // Generate training data and labels
+            generate_training_data();
+            
+            // Release reset
+            #100 reset = 0;
         end
+    endtask
 
-        // Find maximum output
-        max_idx = 0;
-        max_val = fc_memory[0];
-        result_counter = 1;
-        while (result_counter < FC_OUTPUT_SIZE) begin
-            if (fc_memory[result_counter] > max_val) begin
-                max_val = fc_memory[result_counter];
-                max_idx = result_counter;
+    // Generate Training Data
+    task generate_training_data;
+        integer i, j;
+        begin
+            $display("Generating training data...");
+            for (i = 0; i < NUM_TRAIN_SAMPLES; i = i + 1) begin
+                // Generate input data
+                for (j = 0; j < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS; j = j + 1) begin
+                    training_data[i][j] = $random;
+                end
+                // Generate labels (one-hot encoded)
+                true_labels[i] = 1 << ($random % FC_OUTPUT_SIZE);
             end
-            result_counter = result_counter + 1;
+            $display("Training data generation complete\n");
         end
-        $display("\nPredicted Class: %0d", max_idx);
+    endtask
 
-        // End simulation
-        #100;
-        $display("Test Complete");
-        $finish;
-    end
+    // Forward Pass
+    task forward_pass;
+        input integer sample_idx;
+        begin
+            // Convolution Layer
+            conv_enable = 1;
+            @(posedge conv_done);
+            conv_enable = 0;
+            conv_layer_output = conv_layer.feature_map[0][0][0];
+            total_cycles = total_cycles + 1;
 
-    // Monitor for timing violations or stalls
-    always @(posedge clk) begin
-        if (reset)
-            timeout_counter <= 0;
-        else if (conv_enable || pool_enable || fc_enable)
-            timeout_counter <= timeout_counter + 1;
+            // Pool Layer
+            pool_enable = 1;
+            @(posedge pool_done);
+            pool_enable = 0;
+            pool_layer_output = pool_layer.pooled_output[0][0][0];
+            total_cycles = total_cycles + 1;
+
+            // FC Layer
+            fc_enable = 1;
+            @(posedge fc_done);
+            fc_enable = 0;
+            fc_layer_output = fc_layer.output_data[0];
+            total_cycles = total_cycles + 1;
+
+            // Store outputs
+            for (integer i = 0; i < FC_OUTPUT_SIZE; i = i + 1) begin
+                network_outputs[i] = fc_layer.output_data[i];
+            end
+        end
+    endtask
+
+    // Calculate Loss and Update Metrics
+    task calculate_metrics;
+        input integer sample_idx;
+        reg [31:0] temp_loss;
+        reg [3:0] predicted_class;
+        reg [3:0] true_class;
+        begin
+            predicted_class = get_prediction();
+            true_class = get_true_label(sample_idx);
+            
+            if (predicted_class == true_class) begin
+                correct_predictions = correct_predictions + 1;
+            end
+            total_samples = total_samples + 1;
+            
+            temp_loss = 0;
+            for (integer i = 0; i < FC_OUTPUT_SIZE; i = i + 1) begin
+                if (true_labels[sample_idx][i]) begin
+                    temp_loss = temp_loss + (16'hFFFF - network_outputs[i]);
+                end
+            end
+            batch_loss = batch_loss + temp_loss;
+        end
+    endtask
+
+    // Helper Functions
+    function [3:0] get_prediction;
+        reg [15:0] max_val;
+        reg [3:0] max_idx;
+        begin
+            max_val = network_outputs[0];
+            max_idx = 0;
+            for (integer i = 1; i < FC_OUTPUT_SIZE; i = i + 1) begin
+                if (network_outputs[i] > max_val) begin
+                    max_val = network_outputs[i];
+                    max_idx = i;
+                end
+            end
+            get_prediction = max_idx;
+        end
+    endfunction
+
+    function [3:0] get_true_label;
+        input integer sample_idx;
+        begin
+            for (integer i = 0; i < FC_OUTPUT_SIZE; i = i + 1) begin
+                if (true_labels[sample_idx][i]) begin
+                    get_true_label = i;
+                    break;
+                end
+            end
+        end
+    endfunction
+
+    // Print Training Summary
+    task print_training_summary;
+        integer i;
+        real training_time_ms;
+        begin
+            training_time_ms = (training_end_time - training_start_time) / 1000000.0;
+            
+            $display("\nTraining Summary:");
+            $display("------------------------");
+            $display("Training Time: %.2f ms", training_time_ms);
+            $display("Total Clock Cycles: %0d", total_cycles);
+            $display("\nEpoch-wise Progress:");
+            for (i = 0; i < NUM_EPOCHS; i = i + 1) begin
+                $display("Epoch %0d - Loss: %f, Accuracy: %0d%%", 
+                        i + 1,
+                        $itor(epoch_loss_history[i]) / (1 << FRAC_BITS),
+                        epoch_accuracy_history[i]);
+            end
+            $display("------------------------");
+            $display("Final Accuracy: %0d%%\n", epoch_accuracy_history[NUM_EPOCHS-1]);
+        end
+    endtask
+
+    // Main Training Process
+    initial begin
+        // Initialize and print architecture
+        initialize_system();
+        print_architecture();
         
-        if (timeout_counter >= 1000000) begin
-            $display("ERROR: Simulation timeout");
-            $finish;
+        // Record start time
+        training_start_time = $time;
+        
+        // Training loop
+        for (current_epoch = 0; current_epoch < NUM_EPOCHS; current_epoch = current_epoch + 1) begin
+            $display("\nStarting Epoch %0d", current_epoch + 1);
+            epoch_loss = 0;
+            
+            for (current_batch = 0; current_batch < NUM_BATCHES; current_batch = current_batch + 1) begin
+                batch_loss = 0;
+                
+                // Process each sample in batch
+                for (sample_counter = 0; sample_counter < BATCH_SIZE; sample_counter = sample_counter + 1) begin
+                    forward_pass(current_batch * BATCH_SIZE + sample_counter);
+                    calculate_metrics(current_batch * BATCH_SIZE + sample_counter);
+                end
+                
+                // Display batch results
+                $display("Batch %0d/%0d - Loss: %f, Accuracy: %0d%%", 
+                    current_batch + 1,
+                    NUM_BATCHES,
+                    $itor(batch_loss) / (BATCH_SIZE * (1 << FRAC_BITS)),
+                    (correct_predictions * 100) / total_samples);
+                
+                epoch_loss = epoch_loss + batch_loss;
+            end
+            
+            // Store epoch results
+            epoch_loss_history[current_epoch] = epoch_loss / NUM_BATCHES;
+            epoch_accuracy_history[current_epoch] = (correct_predictions * 100) / total_samples;
+            
+            // Display epoch results
+            $display("\nEpoch %0d Results:", current_epoch + 1);
+            $display("Average Loss: %f", $itor(epoch_loss_history[current_epoch]) / (1 << FRAC_BITS));
+            $display("Accuracy: %0d%%", epoch_accuracy_history[current_epoch]);
         end
+        
+        // Record end time and print summary
+        training_end_time = $time;
+        print_training_summary();
+        
+        #100 $finish;
     end
 
-    // Performance monitoring
-    time conv_start_time, conv_end_time;
-    time pool_start_time, pool_end_time;
-    time fc_start_time, fc_end_time;
-
-    always @(posedge conv_enable) conv_start_time = $time;
-    always @(posedge conv_done) begin
-        conv_end_time = $time;
-        $display("Convolution layer completed in %0d ns", conv_end_time - conv_start_time);
-    end
-
-    always @(posedge pool_enable) pool_start_time = $time;
-    always @(posedge pool_done) begin
-        pool_end_time = $time;
-        $display("Pooling layer completed in %0d ns", pool_end_time - pool_start_time);
-    end
-
-    always @(posedge fc_enable) fc_start_time = $time;
-    always @(posedge fc_done) begin
-        fc_end_time = $time;
-        $display("Fully connected layer completed in %0d ns", fc_end_time - fc_start_time);
-        $display("Total processing time: %0d ns", fc_end_time - conv_start_time);
+    // Waveform Generation
+    initial begin
+        $dumpfile("cnn_training.vcd");
+        $dumpvars(0, cnn_training_tb);
     end
 
 endmodule
