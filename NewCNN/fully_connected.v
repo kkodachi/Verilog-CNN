@@ -20,18 +20,21 @@ module fully_connected #(
     output reg fc_done
 );
 
+    // Fixed-point multiplication macro
+    `define FIXED_MULT(a, b) ((a * b) >>> FIXED_POINT_FRACTIONAL_BITS)
+
     // Weight and bias memory
     reg signed [15:0] weights [0:INPUT_SIZE*OUTPUT_SIZE-1];
     reg signed [15:0] biases [0:OUTPUT_SIZE-1];
     
     // State machine
     reg [2:0] state;
-    localparam IDLE = 3'd0;
-    localparam INIT_WEIGHTS = 3'd1;
-    localparam LOAD_INPUT = 3'd2;
-    localparam COMPUTE = 3'd3;
-    localparam STORE_RESULT = 3'd4;
-    localparam DONE = 3'd5;
+    parameter IDLE = 3'd0;
+    parameter INIT_WEIGHTS = 3'd1;
+    parameter LOAD_INPUT = 3'd2;
+    parameter COMPUTE = 3'd3;
+    parameter STORE_RESULT = 3'd4;
+    parameter DONE = 3'd5;
 
     // Counters and computation registers
     reg [$clog2(INPUT_SIZE)-1:0] input_cnt;
@@ -39,6 +42,10 @@ module fully_connected #(
     reg [$clog2(INPUT_SIZE*OUTPUT_SIZE)-1:0] weight_addr;
     reg signed [31:0] accumulator;
     reg signed [15:0] input_buffer;
+
+    // Weight initialization counter
+    reg [$clog2(INPUT_SIZE*OUTPUT_SIZE):0] init_counter;
+    reg bias_init;
 
     // Helper function for weight index calculation
     function automatic integer get_weight_index;
@@ -60,15 +67,30 @@ module fully_connected #(
             accumulator <= 0;
             input_addr <= 0;
             output_addr <= 0;
-
-            // Initialize weights and biases with random values
-            for (integer i = 0; i < INPUT_SIZE * OUTPUT_SIZE; i = i + 1)
-                weights[i] <= $random;
-            for (integer i = 0; i < OUTPUT_SIZE; i = i + 1)
-                biases[i] <= $random;
-
+            init_counter <= 0;
+            bias_init <= 0;
         end else begin
             case (state)
+                INIT_WEIGHTS: begin
+                    if (!bias_init) begin
+                        if (init_counter < OUTPUT_SIZE) begin
+                            biases[init_counter] <= $random;
+                            init_counter <= init_counter + 1;
+                        end else begin
+                            bias_init <= 1;
+                            init_counter <= 0;
+                        end
+                    end else begin
+                        if (init_counter < INPUT_SIZE * OUTPUT_SIZE) begin
+                            weights[init_counter] <= $random;
+                            init_counter <= init_counter + 1;
+                        end else begin
+                            state <= IDLE;
+                            init_counter <= 0;
+                        end
+                    end
+                end
+
                 IDLE: begin
                     if (enable) begin
                         state <= LOAD_INPUT;
@@ -87,12 +109,10 @@ module fully_connected #(
                 COMPUTE: begin
                     weight_addr <= get_weight_index(input_cnt, output_cnt);
                     
-                    // First input needs to add bias
                     if (input_cnt == 0) begin
                         accumulator <= {biases[output_cnt], {FIXED_POINT_FRACTIONAL_BITS{1'b0}}};
                     end
                     
-                    // Multiply-accumulate operation
                     accumulator <= accumulator + 
                         ((input_buffer * weights[weight_addr]) >>> FIXED_POINT_FRACTIONAL_BITS);
                     
@@ -106,7 +126,6 @@ module fully_connected #(
                 end
 
                 STORE_RESULT: begin
-                    // Saturate result
                     output_data <= (accumulator > 32767) ? 16'h7FFF :
                                  (accumulator < -32768) ? 16'h8000 :
                                  accumulator[15:0];

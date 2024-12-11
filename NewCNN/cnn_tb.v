@@ -50,6 +50,13 @@ module cnn_tb();
     wire fc_output_valid;
     reg signed [15:0] fc_memory [0:FC_OUTPUT_SIZE-1];
 
+    // Counters and temporary variables
+    reg [31:0] timeout_counter;
+    reg [$clog2(INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS):0] init_counter;
+    reg [$clog2(FC_OUTPUT_SIZE):0] result_counter;
+    reg signed [15:0] max_val;
+    reg [$clog2(FC_OUTPUT_SIZE)-1:0] max_idx;
+
     // Module instantiations
     conv2d #(
         .INPUT_WIDTH(INPUT_WIDTH),
@@ -123,6 +130,15 @@ module cnn_tb();
         forever #5 clk = ~clk;
     end
 
+    // Initialize input memory
+    initial begin
+        init_counter = 0;
+        while (init_counter < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS) begin
+            input_memory[init_counter] = $random;
+            init_counter = init_counter + 1;
+        end
+    end
+
     // Test stimulus
     initial begin
         // Initialize
@@ -131,10 +147,7 @@ module cnn_tb();
         pool_enable = 0;
         fc_enable = 0;
         input_valid = 0;
-
-        // Load test image data
-        for (integer i = 0; i < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS; i = i + 1)
-            input_memory[i] = $random;
+        timeout_counter = 0;
 
         // Wait 100ns and deassert reset
         #100;
@@ -163,17 +176,22 @@ module cnn_tb();
 
         // Display results
         $display("Classification Results:");
-        for (integer i = 0; i < FC_OUTPUT_SIZE; i = i + 1)
-            $display("Class %0d: %0d", i, fc_memory[i]);
+        result_counter = 0;
+        while (result_counter < FC_OUTPUT_SIZE) begin
+            $display("Class %0d: %0d", result_counter, fc_memory[result_counter]);
+            result_counter = result_counter + 1;
+        end
 
-        // Find maximum output (classification result)
-        integer max_idx = 0;
-        reg signed [15:0] max_val = fc_memory[0];
-        for (integer i = 1; i < FC_OUTPUT_SIZE; i = i + 1) begin
-            if (fc_memory[i] > max_val) begin
-                max_val = fc_memory[i];
-                max_idx = i;
+        // Find maximum output
+        max_idx = 0;
+        max_val = fc_memory[0];
+        result_counter = 1;
+        while (result_counter < FC_OUTPUT_SIZE) begin
+            if (fc_memory[result_counter] > max_val) begin
+                max_val = fc_memory[result_counter];
+                max_idx = result_counter;
             end
+            result_counter = result_counter + 1;
         end
         $display("\nPredicted Class: %0d", max_idx);
 
@@ -183,21 +201,13 @@ module cnn_tb();
         $finish;
     end
 
-    // Add waveform generation
-    initial begin
-        $dumpfile("cnn_test.vcd");
-        $dumpvars(0, cnn_tb);
-    end
-
     // Monitor for timing violations or stalls
-    reg [31:0] timeout_counter;
     always @(posedge clk) begin
         if (reset)
             timeout_counter <= 0;
         else if (conv_enable || pool_enable || fc_enable)
             timeout_counter <= timeout_counter + 1;
         
-        // Timeout after 1,000,000 cycles
         if (timeout_counter >= 1000000) begin
             $display("ERROR: Simulation timeout");
             $finish;
