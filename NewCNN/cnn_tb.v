@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-module cnn_training_demo_tb();
+module cnn_tb();
     // Architecture Parameters
     parameter INPUT_WIDTH = 64;
     parameter INPUT_HEIGHT = 64;
@@ -242,7 +242,7 @@ module cnn_training_demo_tb();
     // Generate waveform file
     initial begin
         $dumpfile("cnn_training.vcd");
-        $dumpvars(0, cnn_training_demo_tb);
+        $dumpvars(0, cnn_tb);
     end
 
 endmodule
