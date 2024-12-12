@@ -35,9 +35,11 @@ module conv2d #(
     reg [31:0] acc;
     reg [15:0] x_pos, y_pos;
 
+    integer i;
+
     // Initialize weights (simplified for simulation)
     initial begin
-        for (integer i = 0; i < WINDOW_SIZE*WINDOW_SIZE; i = i + 1)
+        for (i = 0; i < WINDOW_SIZE*WINDOW_SIZE; i = i + 1)
             weight_buffer[i] = 16'h0100; // 1.0 in fixed point
     end
 
