@@ -1,149 +1,118 @@
 `timescale 1ns/1ps
 
 module cnn_tb();
-    // Parameters
-    parameter INPUT_WIDTH = 64;
-    parameter INPUT_HEIGHT = 64;
-    parameter INPUT_CHANNELS = 1;
-    parameter WINDOW_SIZE = 3;
-    parameter NUM_NEURONS = 30;
-    parameter POOL_STRIDE = 2;
-    parameter FC_OUTPUT_SIZE = 10;
-    parameter FIXED_POINT_BITS = 8;
+    // Previous parameters remain same...
 
-    // Clock and reset
-    reg clk;
-    reg reset;
+    // Additional signals for backpropagation
+    reg [15:0] output_error;
+    wire [15:0] conv_error, pool_error;
+    reg [FC_OUTPUT_SIZE-1:0] true_labels [0:BATCH_SIZE-1];
+    reg [15:0] batch_loss;
+    reg [7:0] accuracy;
     
-    // Control signals
-    reg conv_enable, pool_enable, fc_enable;
-    wire conv_done, pool_done, fc_done;
+    // Training counters
+    reg [3:0] current_epoch;
+    reg [7:0] current_batch;
+    reg [15:0] sample_counter;
 
-    // Data signals
-    reg [15:0] input_data;
-    wire [15:0] conv_output;
-    wire [15:0] pool_output;
-    wire [15:0] fc_output;
-    reg [15:0] learning_rate;
-    
-    // Memory interface signals
-    wire conv_output_valid, pool_output_valid, fc_output_valid;
-    reg input_valid;
-    wire [$clog2(INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS)-1:0] conv_input_addr;
-    wire [$clog2(FC_OUTPUT_SIZE)-1:0] fc_output_addr;
-    
-    // Test data storage
-    reg [15:0] test_data [0:INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS-1];
-    reg [15:0] expected_output [0:FC_OUTPUT_SIZE-1];
-
-    // Instantiate modules
+    // Original module instantiations with backprop connections
     conv2d #(
-        .INPUT_WIDTH(INPUT_WIDTH),
-        .INPUT_HEIGHT(INPUT_HEIGHT),
-        .INPUT_CHANNELS(INPUT_CHANNELS),
-        .WINDOW_SIZE(WINDOW_SIZE),
-        .NUM_NEURONS(NUM_NEURONS)
+        // Previous parameters...
     ) conv_layer (
-        .clk(clk),
-        .reset(reset),
-        .enable(conv_enable),
-        .input_data(input_data),
-        .input_valid(input_valid),
-        .feature_map(conv_output),
-        .output_valid(conv_output_valid),
-        .conv_done(conv_done),
-        .input_addr(conv_input_addr)
+        // Previous connections...
+        .output_error(conv_error),
+        .learning_rate(learning_rate),
+        .backprop_done(conv_backprop_done)
     );
 
     max_pool #(
-        .INPUT_WIDTH(INPUT_WIDTH-WINDOW_SIZE+1),
-        .INPUT_HEIGHT(INPUT_HEIGHT-WINDOW_SIZE+1),
-        .INPUT_CHANNELS(NUM_NEURONS),
-        .STRIDE(POOL_STRIDE)
+        // Previous parameters...
     ) pool_layer (
-        .clk(clk),
-        .reset(reset),
-        .enable(pool_enable),
-        .input_data(conv_output),
-        .input_valid(conv_output_valid),
-        .pooled_output(pool_output),
-        .output_valid(pool_output_valid),
-        .pool_done(pool_done)
+        // Previous connections...
+        .output_error(pool_error),
+        .backprop_done(pool_backprop_done)
     );
 
     fully_connected #(
-        .INPUT_SIZE((INPUT_WIDTH-WINDOW_SIZE+1)*(INPUT_HEIGHT-WINDOW_SIZE+1)*NUM_NEURONS/(POOL_STRIDE*POOL_STRIDE)),
-        .OUTPUT_SIZE(FC_OUTPUT_SIZE)
+        // Previous parameters...
     ) fc_layer (
-        .clk(clk),
-        .reset(reset),
-        .enable(fc_enable),
-        .input_data(pool_output),
-        .input_valid(pool_output_valid),
-        .output_data(fc_output),
-        .output_valid(fc_output_valid),
-        .output_addr(fc_output_addr),
-        .fc_done(fc_done)
+        // Previous connections...
+        .output_error(output_error),
+        .learning_rate(learning_rate),
+        .backprop_done(fc_backprop_done)
     );
 
-    // Clock generation
+    // Test stimulus with training loop
     initial begin
-        clk = 0;
-        forever #5 clk = ~clk;
-    end
+        // Previous initialization...
 
-    // Test stimulus
-    initial begin
-        // Initialize
-        reset = 1;
-        conv_enable = 0;
-        pool_enable = 0;
-        fc_enable = 0;
-        input_valid = 0;
-        learning_rate = 16'h0080; // 0.5 in fixed point
+        // Training loop
+        for (current_epoch = 0; current_epoch < 5; current_epoch = current_epoch + 1) begin
+            $display("\nStarting Epoch %0d", current_epoch + 1);
+            
+            for (current_batch = 0; current_batch < BATCH_SIZE; current_batch = current_batch + 1) begin
+                // Forward pass
+                conv_enable = 1;
+                input_valid = 1;
+                @(posedge conv_done);
+                conv_enable = 0;
 
-        // Generate test data
-        for (integer i = 0; i < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS; i = i + 1)
-            test_data[i] = i[15:0]; // Sequential test data
+                pool_enable = 1;
+                @(posedge pool_done);
+                pool_enable = 0;
 
-        // Apply reset
-        #100;
-        reset = 0;
-        #100;
+                fc_enable = 1;
+                @(posedge fc_done);
+                fc_enable = 0;
 
-        // Test forward pass
-        @(posedge clk);
-        conv_enable = 1;
-        input_valid = 1;
+                // Calculate error and start backpropagation
+                output_error = fc_output - true_labels[current_batch][fc_output_addr];
+                batch_loss = batch_loss + (output_error * output_error) >> FIXED_POINT_BITS;
 
-        // Wait for completion
-        @(posedge conv_done);
-        conv_enable = 0;
-        pool_enable = 1;
+                // Wait for backpropagation completion
+                @(posedge fc_backprop_done);
+                @(posedge pool_backprop_done);
+                @(posedge conv_backprop_done);
 
-        @(posedge pool_done);
-        pool_enable = 0;
-        fc_enable = 1;
+                // Update accuracy if prediction matches label
+                if (fc_output == true_labels[current_batch][fc_output_addr])
+                    accuracy = accuracy + 1;
 
-        @(posedge fc_done);
-        fc_enable = 0;
+                // Display batch progress
+                $display("Batch %0d: Loss = %0d, Accuracy = %0d%%", 
+                    current_batch,
+                    batch_loss,
+                    (accuracy * 100) / (current_batch + 1));
+            end
 
-        // Display results
-        $display("Test Complete");
+            // Display epoch results
+            $display("Epoch %0d Results:", current_epoch + 1);
+            $display("Final Loss: %0d", batch_loss);
+            $display("Final Accuracy: %0d%%", (accuracy * 100) / BATCH_SIZE);
+
+            // Reset batch metrics
+            batch_loss = 0;
+            accuracy = 0;
+        end
+
+        $display("\nTraining Complete!");
         #1000;
         $finish;
     end
 
-    // Monitor input data
+    // Error calculation and backpropagation monitoring
     always @(posedge clk) begin
-        if (!reset && input_valid)
-            input_data <= test_data[conv_input_addr];
+        if (!reset && fc_output_valid) begin
+            // Log prediction vs true label
+            $display("Prediction: %d, True Label: %d", 
+                    fc_output, 
+                    true_labels[current_batch][fc_output_addr]);
+            
+            // Log error propagation
+            if (|output_error) begin
+                $display("Error at layer: FC=%d, Pool=%d, Conv=%d",
+                        output_error, pool_error, conv_error);
+            end
+        end
     end
-
-    // Generate waveform file
-    initial begin
-        $dumpfile("cnn_test.vcd");
-        $dumpvars(0, cnn_tb);
-    end
-
 endmodule
