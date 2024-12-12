@@ -47,6 +47,9 @@ module cnn_tb();
     wire [15:0] conv_error, pool_error, fc_error;
     reg [15:0] output_error;
 
+    // Loop variables
+    reg [31:0] i;
+    
     // Instantiate CNN modules
     conv2d #(
         .INPUT_WIDTH(INPUT_WIDTH),
@@ -130,13 +133,17 @@ module cnn_tb();
         accuracy = 0;
 
         // Generate random training data
-        for (integer i = 0; i < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS; i = i + 1) begin
+        i = 0;
+        while (i < INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS) begin
             input_data[i] = $random;
+            i = i + 1;
         end
         
         // Generate random labels
-        for (integer i = 0; i < BATCH_SIZE; i = i + 1) begin
+        i = 0;
+        while (i < BATCH_SIZE) begin
             true_labels[i] = 1 << ($random % FC_OUTPUT_SIZE); // One-hot encoding
+            i = i + 1;
         end
 
         // Release reset
@@ -144,11 +151,13 @@ module cnn_tb();
         #100 conv_input_valid = 1;
 
         // Training loop
-        for (current_epoch = 0; current_epoch < NUM_EPOCHS; current_epoch = current_epoch + 1) begin
+        current_epoch = 0;
+        while (current_epoch < NUM_EPOCHS) begin
             $display("\nStarting Epoch %0d", current_epoch + 1);
             epoch_loss = 0;
             
-            for (current_batch = 0; current_batch < BATCH_SIZE; current_batch = current_batch + 1) begin
+            current_batch = 0;
+            while (current_batch < BATCH_SIZE) begin
                 // Forward pass
                 conv_enable = 1;
                 @(posedge conv_done) conv_enable = 0;
@@ -170,11 +179,15 @@ module cnn_tb();
 
                 // Display progress
                 $display("Batch %0d: Loss = %0d", current_batch, output_error);
+                
+                current_batch = current_batch + 1;
             end
 
             // Display epoch results
             $display("Epoch %0d completed. Average Loss: %0d", 
                     current_epoch + 1, epoch_loss/BATCH_SIZE);
+            
+            current_epoch = current_epoch + 1;
         end
 
         // Training complete
@@ -184,7 +197,7 @@ module cnn_tb();
         #1000 $finish;
     end
 
-    // Calculate accuracy (correct predictions / total predictions)
+    // Calculate accuracy
     always @(posedge fc_done) begin
         if (!reset) begin
             if (fc_output == true_labels[current_batch][fc_layer.output_addr])
