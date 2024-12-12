@@ -4,10 +4,9 @@ module FPGA2_UART_Receiver(
     output reg led      // LED output
 );
 
-    wire [7:0] data;        // Received data
-    wire data_ready;        // Data ready signal
+    wire [7:0] data;
+    wire data_ready;
 
-    // Instantiate UART Receiver
     UART_Receiver uart_rx (
         .clk(clk),
         .rx(rx),
@@ -15,10 +14,9 @@ module FPGA2_UART_Receiver(
         .ready(data_ready)
     );
 
-    // Logic to turn on the LED
     always @(posedge clk) begin
         if (data_ready && data == 8'b00110001) begin
-            led <= 1; // Turn LED ON when '1' is received
+            led <= 1; // Turn LED ON when ASCII '1' is received
         end else begin
             led <= 0; // Turn LED OFF otherwise
         end
@@ -26,15 +24,13 @@ module FPGA2_UART_Receiver(
 
 endmodule
 
-// UART Receiver Module
 module UART_Receiver(
     input wire clk,
     input wire rx,
     output reg [7:0] data,
     output reg ready
 );
-    // UART parameters
-    parameter CLK_FREQ = 50000000;  // 50 MHz clock
+    parameter CLK_FREQ = 50000000;
     parameter BAUD_RATE = 115200;
     parameter BIT_PERIOD = CLK_FREQ / BAUD_RATE;
 
@@ -47,22 +43,19 @@ module UART_Receiver(
     always @(posedge clk) begin
         rx_prev <= rx;
         if (!rx && rx_prev) begin
-            // Start bit detected
             clk_count <= BIT_PERIOD / 2;
             bit_index <= 0;
             ready <= 0;
         end else if (clk_count > 0) begin
             clk_count <= clk_count - 1;
         end else if (bit_index < 8) begin
-            // Sample data bits
             clk_count <= BIT_PERIOD;
             shift_reg <= {rx, shift_reg[7:1]};
             bit_index <= bit_index + 1;
         end else if (bit_index == 8) begin
-            // Data received
             data <= shift_reg;
             ready <= 1;
-            bit_index <= 9; // Move to idle
+            bit_index <= 9;
         end
     end
 endmodule
