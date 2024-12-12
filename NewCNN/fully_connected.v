@@ -16,6 +16,14 @@ module fully_connected #(
     output reg [$clog2(OUTPUT_SIZE)-1:0] output_addr,
     output reg output_valid,
     output reg fc_done,
+    // Weight memory interface
+    input wire [15:0] weight_data,
+    output reg [$clog2(INPUT_SIZE*OUTPUT_SIZE)-1:0] weight_addr,
+    input wire weight_valid,
+    // Bias memory interface
+    input wire [15:0] bias_data,
+    output reg [$clog2(OUTPUT_SIZE)-1:0] bias_addr,
+    input wire bias_valid,
     // Backpropagation
     input wire [15:0] output_error,
     input wire [15:0] learning_rate,
@@ -23,117 +31,127 @@ module fully_connected #(
     output reg backprop_done
 );
 
-    // Fixed-point multiplication
-    `define FIXED_MULT(a, b) ((a * b) >>> FIXED_POINT_BITS)
-
-    // Memory for weights and biases
-    (* ram_style = "block" *) reg [15:0] weights [0:INPUT_SIZE*OUTPUT_SIZE-1];
-    (* ram_style = "block" *) reg [15:0] biases [0:OUTPUT_SIZE-1];
-    
     // State machine
-    reg [2:0] state;
-    localparam IDLE = 3'd0;
-    localparam INIT = 3'd1;
-    localparam LOAD = 3'd2;
-    localparam COMPUTE = 3'd3;
-    localparam STORE = 3'd4;
-    localparam DONE = 3'd5;
+    reg [3:0] state;
+    localparam IDLE = 4'd0;
+    localparam LOAD_BIAS = 4'd1;
+    localparam LOAD_WEIGHT = 4'd2;
+    localparam COMPUTE = 4'd3;
+    localparam ACCUMULATE = 4'd4;
+    localparam STORE = 4'd5;
+    localparam BACKPROP = 4'd6;
+    localparam UPDATE_WEIGHTS = 4'd7;
+    localparam DONE = 4'd8;
 
-    // Computation registers
+    // Computing registers
     reg [31:0] mult_result;
     reg [31:0] accumulator;
-    reg [$clog2(INPUT_SIZE)-1:0] weight_idx;
+    reg [$clog2(INPUT_SIZE)-1:0] input_idx;
+    reg [$clog2(OUTPUT_SIZE)-1:0] output_idx;
     reg [15:0] weight_update;
-    reg init_done;
-    reg [31:0] init_counter;
 
-    always @(posedge clk or posedge reset) begin
+    // Fixed-point multiplication
+    function [15:0] fixed_mult;
+        input [15:0] a;
+        input [15:0] b;
+        reg [31:0] temp;
+    begin
+        temp = a * b;
+        fixed_mult = temp[23:8]; // 16-bit result with 8 fractional bits
+    end
+    endfunction
+
+    // Main process
+    always @(posedge clk) begin
         if (reset) begin
-            state <= INIT;
+            state <= IDLE;
             fc_done <= 0;
             backprop_done <= 0;
             output_valid <= 0;
-            weight_idx <= 0;
-            accumulator <= 0;
-            init_done <= 0;
-            init_counter <= 0;
+            input_addr <= 0;
+            weight_addr <= 0;
+            bias_addr <= 0;
             output_addr <= 0;
+            input_idx <= 0;
+            output_idx <= 0;
+            accumulator <= 0;
         end else begin
             case (state)
-                INIT: begin
-                    if (!init_done) begin
-                        if (init_counter < INPUT_SIZE * OUTPUT_SIZE) begin
-                            weights[init_counter] <= init_counter; // Initialize with sequential values for FPGA
-                            init_counter <= init_counter + 1;
-                        end else if (init_counter < (INPUT_SIZE * OUTPUT_SIZE + OUTPUT_SIZE)) begin
-                            biases[init_counter - INPUT_SIZE * OUTPUT_SIZE] <= 0;
-                            init_counter <= init_counter + 1;
-                        end else begin
-                            init_done <= 1;
-                            state <= IDLE;
-                        end
-                    end
-                end
-
                 IDLE: begin
-                    fc_done <= 0;
-                    backprop_done <= 0;
-                    output_valid <= 0;
-                    if (enable && init_done) begin
-                        state <= LOAD;
-                        weight_idx <= 0;
-                        accumulator <= {biases[output_addr], {FIXED_POINT_BITS{1'b0}}};
+                    if (enable) begin
+                        state <= LOAD_BIAS;
+                        output_valid <= 0;
+                        fc_done <= 0;
+                        backprop_done <= 0;
                     end
                 end
 
-                LOAD: begin
-                    if (input_valid) begin
-                        mult_result <= `FIXED_MULT(input_data, 
-                                     weights[weight_idx + output_addr * INPUT_SIZE]);
+                LOAD_BIAS: begin
+                    if (bias_valid) begin
+                        accumulator <= {bias_data, {FIXED_POINT_BITS{1'b0}}};
+                        state <= LOAD_WEIGHT;
+                        input_idx <= 0;
+                    end
+                    bias_addr <= output_idx;
+                end
+
+                LOAD_WEIGHT: begin
+                    if (weight_valid && input_valid) begin
+                        weight_addr <= input_idx + output_idx * INPUT_SIZE;
+                        input_addr <= input_idx;
                         state <= COMPUTE;
                     end
                 end
 
                 COMPUTE: begin
+                    mult_result <= fixed_mult(input_data, weight_data);
+                    state <= ACCUMULATE;
+                end
+
+                ACCUMULATE: begin
                     accumulator <= accumulator + mult_result;
                     
-                    if (weight_idx == INPUT_SIZE-1) begin
+                    if (input_idx == INPUT_SIZE-1) begin
                         state <= STORE;
-                        weight_idx <= 0;
                     end else begin
-                        weight_idx <= weight_idx + 1;
-                        state <= LOAD;
+                        input_idx <= input_idx + 1;
+                        state <= LOAD_WEIGHT;
                     end
                 end
 
                 STORE: begin
-                    output_data <= accumulator[15:0];
+                    output_data <= accumulator[23:8];
                     output_valid <= 1;
-                    
-                    if (output_addr == OUTPUT_SIZE-1) begin
-                        state <= DONE;
-                    end else begin
-                        output_addr <= output_addr + 1;
-                        accumulator <= {biases[output_addr + 1], {FIXED_POINT_BITS{1'b0}}};
-                        state <= LOAD;
-                    end
+                    output_addr <= output_idx;
 
-                    // Handle backpropagation update
-                    if (output_error != 0) begin
-                        weight_update <= `FIXED_MULT(output_error, learning_rate);
-                        weights[weight_idx + output_addr * INPUT_SIZE] <= 
-                            weights[weight_idx + output_addr * INPUT_SIZE] - 
-                            `FIXED_MULT(weight_update, input_data);
-                        input_error <= `FIXED_MULT(output_error, 
-                            weights[weight_idx + output_addr * INPUT_SIZE]);
+                    if (output_idx == OUTPUT_SIZE-1) begin
+                        state <= output_error ? BACKPROP : DONE;
+                    end else begin
+                        output_idx <= output_idx + 1;
+                        state <= LOAD_BIAS;
+                    end
+                end
+
+                BACKPROP: begin
+                    if (weight_valid && input_valid) begin
+                        // Calculate weight updates
+                        weight_update <= fixed_mult(output_error, learning_rate);
+                        input_error <= fixed_mult(output_error, weight_data);
+                        
+                        if (input_idx == INPUT_SIZE-1 && output_idx == OUTPUT_SIZE-1) begin
+                            state <= DONE;
+                        end else if (input_idx == INPUT_SIZE-1) begin
+                            input_idx <= 0;
+                            output_idx <= output_idx + 1;
+                        end else begin
+                            input_idx <= input_idx + 1;
+                        end
                     end
                 end
 
                 DONE: begin
                     fc_done <= 1;
-                    output_addr <= 0;
-                    if (output_error != 0)
-                        backprop_done <= 1;
+                    if (output_error) backprop_done <= 1;
                     state <= IDLE;
                 end
 

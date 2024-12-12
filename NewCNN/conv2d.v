@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 module conv2d #(
     parameter INPUT_WIDTH = 64,
     parameter INPUT_HEIGHT = 64,
@@ -10,66 +12,109 @@ module conv2d #(
     input wire reset,
     input wire enable,
     input wire [15:0] input_data,
-    output reg [$clog2(INPUT_WIDTH * INPUT_HEIGHT * INPUT_CHANNELS)-1:0] input_addr,
+    output reg [$clog2(INPUT_WIDTH*INPUT_HEIGHT*INPUT_CHANNELS)-1:0] input_addr,
     input wire input_valid,
     output reg [15:0] feature_map,
-    output reg [$clog2((INPUT_WIDTH - WINDOW_SIZE + 1) * (INPUT_HEIGHT - WINDOW_SIZE + 1) * NUM_NEURONS)-1:0] output_addr,
+    output reg [$clog2((INPUT_WIDTH-WINDOW_SIZE+1)*(INPUT_HEIGHT-WINDOW_SIZE+1)*NUM_NEURONS)-1:0] output_addr,
     output reg output_valid,
-    output reg conv_done,
-    input wire [15:0] output_error,
-    input wire [15:0] learning_rate,
-    output reg backprop_done
+    output reg conv_done
 );
-
-    // Memory for weights
-    reg [15:0] kernel [0:INPUT_CHANNELS * WINDOW_SIZE * WINDOW_SIZE * NUM_NEURONS - 1];
-    reg [$clog2(INPUT_CHANNELS * WINDOW_SIZE * WINDOW_SIZE * NUM_NEURONS)-1:0] kernel_addr;
 
     // State machine
     reg [2:0] state;
-    localparam IDLE = 3'd0, FORWARD = 3'd1, BACKPROP = 3'd2, DONE = 3'd3;
+    localparam IDLE = 3'd0;
+    localparam LOAD = 3'd1;
+    localparam COMPUTE = 3'd2;
+    localparam STORE = 3'd3;
+    localparam DONE = 3'd4;
 
-    reg [31:0] accumulator;
+    // Internal registers
+    reg [15:0] window_buffer [0:WINDOW_SIZE*WINDOW_SIZE-1];
+    reg [15:0] weight_buffer [0:WINDOW_SIZE*WINDOW_SIZE-1];
+    reg [$clog2(WINDOW_SIZE*WINDOW_SIZE)-1:0] window_idx;
+    reg [31:0] acc;
+    reg [15:0] x_pos, y_pos;
 
+    // Initialize weights (simplified for simulation)
     initial begin
-        kernel_addr = 0;
-        for (int i = 0; i < INPUT_CHANNELS * WINDOW_SIZE * WINDOW_SIZE * NUM_NEURONS; i = i + 1)
-            kernel[i] = $random % 256; // Random initial weights
+        for (integer i = 0; i < WINDOW_SIZE*WINDOW_SIZE; i = i + 1)
+            weight_buffer[i] = 16'h0100; // 1.0 in fixed point
     end
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             state <= IDLE;
+            window_idx <= 0;
+            input_addr <= 0;
+            output_addr <= 0;
+            output_valid <= 0;
             conv_done <= 0;
-            backprop_done <= 0;
+            x_pos <= 0;
+            y_pos <= 0;
+            acc <= 0;
         end else begin
             case (state)
                 IDLE: begin
-                    if (enable) state <= FORWARD;
+                    if (enable && input_valid) begin
+                        state <= LOAD;
+                        window_idx <= 0;
+                        acc <= 0;
+                        output_valid <= 0;
+                        conv_done <= 0;
+                    end
                 end
-                FORWARD: begin
-                    // Convolution Logic
+
+                LOAD: begin
                     if (input_valid) begin
-                        accumulator = accumulator + input_data * kernel[kernel_addr];
-                        kernel_addr = kernel_addr + 1;
-                        if (kernel_addr == INPUT_CHANNELS * WINDOW_SIZE * WINDOW_SIZE * NUM_NEURONS - 1) begin
-                            feature_map = accumulator[15:0];
-                            output_valid = 1;
-                            state <= BACKPROP;
+                        window_buffer[window_idx] <= input_data;
+                        input_addr <= input_addr + 1;
+                        
+                        if (window_idx == WINDOW_SIZE*WINDOW_SIZE-1) begin
+                            window_idx <= 0;
+                            state <= COMPUTE;
+                        end else begin
+                            window_idx <= window_idx + 1;
                         end
                     end
                 end
-                BACKPROP: begin
-                    // Weight update logic
-                    kernel[kernel_addr] = kernel[kernel_addr] - (output_error * learning_rate) >> FIXED_POINT_BITS;
-                    backprop_done = 1;
-                    state <= DONE;
+
+                COMPUTE: begin
+                    // Compute convolution for current window
+                    acc <= acc + (window_buffer[window_idx] * weight_buffer[window_idx]);
+                    
+                    if (window_idx == WINDOW_SIZE*WINDOW_SIZE-1) begin
+                        state <= STORE;
+                    end else begin
+                        window_idx <= window_idx + 1;
+                    end
                 end
+
+                STORE: begin
+                    feature_map <= acc[23:8]; // Fixed point adjustment
+                    output_valid <= 1;
+                    output_addr <= y_pos * (INPUT_WIDTH-WINDOW_SIZE+1) + x_pos;
+
+                    if (x_pos == INPUT_WIDTH-WINDOW_SIZE) begin
+                        x_pos <= 0;
+                        if (y_pos == INPUT_HEIGHT-WINDOW_SIZE) begin
+                            state <= DONE;
+                        end else begin
+                            y_pos <= y_pos + 1;
+                            state <= LOAD;
+                        end
+                    end else begin
+                        x_pos <= x_pos + 1;
+                        state <= LOAD;
+                    end
+                end
+
                 DONE: begin
-                    conv_done = 1;
+                    conv_done <= 1;
+                    output_valid <= 0;
                     state <= IDLE;
                 end
             endcase
         end
     end
+
 endmodule
