@@ -1,0 +1,25 @@
+module UART_Transmitter(
+    input wire clk,
+    input wire sw,
+    output wire tx
+);
+    reg [7:0] data;
+    reg start_tx;
+
+    always @(posedge clk) begin
+        if (sw) begin
+            data <= 8'b00110001; // ASCII '1'
+            start_tx <= 1;
+        end else begin
+            start_tx <= 0;
+        end
+    end
+
+    // Instantiate UART module
+    UART uart_tx (
+        .clk(clk),
+        .start(start_tx),
+        .data(data),
+        .tx(tx)
+    );
+endmodule

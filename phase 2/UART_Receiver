@@ -1,0 +1,25 @@
+module UART_Receiver(
+    input wire clk,
+    input wire rx,
+    output reg led
+);
+    wire [7:0] received_data;
+    wire data_ready;
+
+    // Instantiate UART module
+    UART uart_rx (
+        .clk(clk),
+        .rx(rx),
+        .data(received_data),
+        .ready(data_ready)
+    );
+
+    always @(posedge clk) begin
+        if (data_ready && received_data == 8'b00110001) begin
+            led <= 1; // Turn LED ON
+        end else begin
+            led <= 0; // Turn LED OFF
+        end
+    end
+endmodule
+
