@@ -169,7 +169,7 @@ module cnn_tb();
                 @(posedge fc_done) fc_enable = 0;
 
                 // Calculate error and update weights
-                output_error = fc_output - true_labels[current_batch][fc_layer.output_addr];
+                output_error = fc_output - true_labels[current_batch];
                 epoch_loss = epoch_loss + output_error;
 
                 // Wait for backpropagation
@@ -195,14 +195,6 @@ module cnn_tb();
         $display("Final Loss: %0d", epoch_loss/BATCH_SIZE);
         
         #1000 $finish;
-    end
-
-    // Calculate accuracy
-    always @(posedge fc_done) begin
-        if (!reset) begin
-            if (fc_output == true_labels[current_batch][fc_layer.output_addr])
-                accuracy <= accuracy + 1;
-        end
     end
 
     // Generate VCD file

@@ -29,7 +29,7 @@ module fully_connected #(
     // Memory for weights and biases
     reg [15:0] weights [0:INPUT_SIZE*OUTPUT_SIZE-1];
     reg [15:0] biases [0:OUTPUT_SIZE-1];
-    
+
     // State machine
     reg [2:0] state;
     localparam IDLE = 3'd0;
@@ -49,9 +49,9 @@ module fully_connected #(
     integer i;
     initial begin
         for (i = 0; i < INPUT_SIZE*OUTPUT_SIZE; i = i + 1)
-            weights[i] = $random;
+            weights[i] = 16'h0001; // Initialize weights to small values
         for (i = 0; i < OUTPUT_SIZE; i = i + 1)
-            biases[i] = $random;
+            biases[i] = 16'h0000; // Initialize biases to 0
     end
 
     always @(posedge clk or posedge reset) begin
@@ -67,18 +67,16 @@ module fully_connected #(
         end else begin
             case (state)
                 IDLE: begin
-                    fc_done <= 0;  // Clear done signal when starting new computation
-                    backprop_done <= 0;
-                    output_valid <= 0;
                     if (enable) begin
-                        state <= LOAD;
-                        weight_idx <= 0;
+                        fc_done <= 0;
+                        backprop_done <= 0;
+                        output_valid <= 0;
                         accumulator <= {biases[output_addr], {FIXED_POINT_BITS{1'b0}}};
+                        state <= LOAD;
                     end
                 end
 
                 LOAD: begin
-                    input_addr <= weight_idx;  // Set input address
                     if (input_valid) begin
                         mult_result <= `FIXED_MULT(input_data, 
                                      weights[weight_idx + output_addr * INPUT_SIZE]);
@@ -88,12 +86,13 @@ module fully_connected #(
 
                 COMPUTE: begin
                     accumulator <= accumulator + mult_result;
-                    
+
                     if (weight_idx == INPUT_SIZE-1) begin
                         state <= STORE;
                         weight_idx <= 0;
                     end else begin
                         weight_idx <= weight_idx + 1;
+                        input_addr <= weight_idx + 1;
                         state <= LOAD;
                     end
                 end
@@ -101,7 +100,7 @@ module fully_connected #(
                 STORE: begin
                     output_data <= accumulator[15:0];
                     output_valid <= 1;
-                    
+
                     if (output_addr == OUTPUT_SIZE-1) begin
                         state <= DONE;
                     end else begin
@@ -112,25 +111,29 @@ module fully_connected #(
                 end
 
                 BACKPROP: begin
+                    // Update weights and calculate input error
                     weight_update <= `FIXED_MULT(output_error, learning_rate);
                     weights[weight_idx + output_addr * INPUT_SIZE] <= 
-                        weights[weight_idx + output_addr * INPUT_SIZE] - 
-                        `FIXED_MULT(weight_update, input_data);
-                    
+                        weights[weight_idx + output_addr * INPUT_SIZE] - weight_update;
+
                     input_error <= `FIXED_MULT(output_error, 
                                   weights[weight_idx + output_addr * INPUT_SIZE]);
-                    
-                    if (weight_idx == INPUT_SIZE-1)
+
+                    if (weight_idx == INPUT_SIZE-1) begin
                         state <= DONE;
-                    else
+                    end else begin
                         weight_idx <= weight_idx + 1;
+                    end
                 end
 
                 DONE: begin
                     fc_done <= 1;
+                    backprop_done <= 1;
                     output_addr <= 0;  // Reset for next computation
                     state <= IDLE;
                 end
+
+                default: state <= IDLE;
             endcase
         end
     end
