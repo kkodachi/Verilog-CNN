@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import collections
 
@@ -20,6 +21,8 @@ class Conv2d():
         :param input_: single input
         :return: feature map
         """
+        start_time = time.time()
+        
         self.input_ = input_
         self.width, self.height, self.channel = self.input_.shape[2], self.input_.shape[1], self.input_.shape[-1]
 
@@ -33,6 +36,10 @@ class Conv2d():
                 patch = self.input_[:, i:i + self.window_size, j:j + self.window_size, [self.channel - 1]]
                 matMul = np.sum(patch * self.kernel, axis=(1, 2))
                 self.featureMap[:, i, j, :] = matMul
+
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"Conv2d forward elapsed time: {elapsed_time:.2f} seconds")
 
         return self.featureMap
 
