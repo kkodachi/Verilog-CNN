@@ -3,152 +3,130 @@
 module fully_connected #(
     parameter INPUT_SIZE = 120,
     parameter OUTPUT_SIZE = 10,
-    parameter FIXED_POINT_FRACTIONAL_BITS = 8
+    parameter FIXED_POINT_BITS = 8
 )(
     input wire clk,
     input wire reset,
     input wire enable,
-    // Memory interface for input
-    input wire signed [15:0] input_data,
+    // Forward pass
+    input wire [15:0] input_data,
     output reg [$clog2(INPUT_SIZE)-1:0] input_addr,
     input wire input_valid,
-    // Memory interface for output
-    output reg signed [15:0] output_data,
+    output reg [15:0] output_data,
     output reg [$clog2(OUTPUT_SIZE)-1:0] output_addr,
     output reg output_valid,
-    // Control signals
-    output reg fc_done
+    output reg fc_done,
+    // Backpropagation
+    input wire [15:0] output_error,
+    input wire [15:0] learning_rate,
+    output reg [15:0] input_error,
+    output reg backprop_done
 );
 
-    // Fixed-point multiplication macro
-    `define FIXED_MULT(a, b) ((a * b) >>> FIXED_POINT_FRACTIONAL_BITS)
+    // Fixed-point multiplication
+    `define FIXED_MULT(a, b) ((a * b) >>> FIXED_POINT_BITS)
 
-    // Weight and bias memory
-    reg signed [15:0] weights [0:INPUT_SIZE*OUTPUT_SIZE-1];
-    reg signed [15:0] biases [0:OUTPUT_SIZE-1];
+    // Memory for weights and biases
+    reg [15:0] weights [0:INPUT_SIZE*OUTPUT_SIZE-1];
+    reg [15:0] biases [0:OUTPUT_SIZE-1];
     
     // State machine
     reg [2:0] state;
-    parameter IDLE = 3'd0;
-    parameter INIT_WEIGHTS = 3'd1;
-    parameter LOAD_INPUT = 3'd2;
-    parameter COMPUTE = 3'd3;
-    parameter STORE_RESULT = 3'd4;
-    parameter DONE = 3'd5;
+    localparam IDLE = 3'd0;
+    localparam LOAD = 3'd1;
+    localparam COMPUTE = 3'd2;
+    localparam STORE = 3'd3;
+    localparam BACKPROP = 3'd4;
+    localparam DONE = 3'd5;
 
-    // Counters and computation registers
-    reg [$clog2(INPUT_SIZE)-1:0] input_cnt;
-    reg [$clog2(OUTPUT_SIZE)-1:0] output_cnt;
-    reg [$clog2(INPUT_SIZE*OUTPUT_SIZE)-1:0] weight_addr;
-    reg signed [31:0] accumulator;
-    reg signed [15:0] input_buffer;
+    // Computation registers
+    reg [31:0] mult_result;
+    reg [31:0] accumulator;
+    reg [$clog2(INPUT_SIZE)-1:0] weight_idx;
+    reg [15:0] weight_update;
 
-    // Weight initialization counter
-    reg [$clog2(INPUT_SIZE*OUTPUT_SIZE):0] init_counter;
-    reg bias_init;
+    // Initialize weights and biases
+    integer i;
+    initial begin
+        for (i = 0; i < INPUT_SIZE*OUTPUT_SIZE; i = i + 1)
+            weights[i] = $random;
+        for (i = 0; i < OUTPUT_SIZE; i = i + 1)
+            biases[i] = $random;
+    end
 
-    // Helper function for weight index calculation
-    function automatic integer get_weight_index;
-        input integer in_idx, out_idx;
-        begin
-            get_weight_index = in_idx + out_idx * INPUT_SIZE;
-        end
-    endfunction
-
-    // Main state machine
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            state <= INIT_WEIGHTS;
+            state <= IDLE;
             fc_done <= 0;
+            backprop_done <= 0;
             output_valid <= 0;
-            input_cnt <= 0;
-            output_cnt <= 0;
-            weight_addr <= 0;
+            weight_idx <= 0;
             accumulator <= 0;
-            input_addr <= 0;
-            output_addr <= 0;
-            init_counter <= 0;
-            bias_init <= 0;
         end else begin
             case (state)
-                INIT_WEIGHTS: begin
-                    if (!bias_init) begin
-                        if (init_counter < OUTPUT_SIZE) begin
-                            biases[init_counter] <= $random;
-                            init_counter <= init_counter + 1;
-                        end else begin
-                            bias_init <= 1;
-                            init_counter <= 0;
-                        end
-                    end else begin
-                        if (init_counter < INPUT_SIZE * OUTPUT_SIZE) begin
-                            weights[init_counter] <= $random;
-                            init_counter <= init_counter + 1;
-                        end else begin
-                            state <= IDLE;
-                            init_counter <= 0;
-                        end
-                    end
-                end
-
                 IDLE: begin
                     if (enable) begin
-                        state <= LOAD_INPUT;
-                        output_valid <= 0;
+                        state <= LOAD;
+                        accumulator <= {biases[output_addr], {FIXED_POINT_BITS{1'b0}}};
                     end
                 end
 
-                LOAD_INPUT: begin
-                    input_addr <= input_cnt;
+                LOAD: begin
                     if (input_valid) begin
-                        input_buffer <= input_data;
+                        mult_result <= `FIXED_MULT(input_data, 
+                                     weights[weight_idx + output_addr * INPUT_SIZE]);
                         state <= COMPUTE;
                     end
                 end
 
                 COMPUTE: begin
-                    weight_addr <= get_weight_index(input_cnt, output_cnt);
+                    accumulator <= accumulator + mult_result;
                     
-                    if (input_cnt == 0) begin
-                        accumulator <= {biases[output_cnt], {FIXED_POINT_FRACTIONAL_BITS{1'b0}}};
-                    end
-                    
-                    accumulator <= accumulator + 
-                        ((input_buffer * weights[weight_addr]) >>> FIXED_POINT_FRACTIONAL_BITS);
-                    
-                    if (input_cnt == INPUT_SIZE - 1) begin
-                        input_cnt <= 0;
-                        state <= STORE_RESULT;
-                    end else begin
-                        input_cnt <= input_cnt + 1;
-                        state <= LOAD_INPUT;
+                    if (weight_idx == INPUT_SIZE-1)
+                        state <= STORE;
+                    else begin
+                        weight_idx <= weight_idx + 1;
+                        state <= LOAD;
                     end
                 end
 
-                STORE_RESULT: begin
-                    output_data <= (accumulator > 32767) ? 16'h7FFF :
-                                 (accumulator < -32768) ? 16'h8000 :
-                                 accumulator[15:0];
-                    output_addr <= output_cnt;
+                STORE: begin
+                    output_data <= accumulator[15:0];
                     output_valid <= 1;
-                    accumulator <= 0;
-
-                    if (output_cnt == OUTPUT_SIZE - 1) begin
-                        output_cnt <= 0;
+                    
+                    if (output_error != 0)
+                        state <= BACKPROP;
+                    else if (output_addr == OUTPUT_SIZE-1)
                         state <= DONE;
-                    end else begin
-                        output_cnt <= output_cnt + 1;
-                        state <= LOAD_INPUT;
+                    else begin
+                        output_addr <= output_addr + 1;
+                        weight_idx <= 0;
+                        state <= LOAD;
                     end
+                end
+
+                BACKPROP: begin
+                    // Update weights and compute input error
+                    weight_update <= `FIXED_MULT(output_error, learning_rate);
+                    weights[weight_idx + output_addr * INPUT_SIZE] <= 
+                        weights[weight_idx + output_addr * INPUT_SIZE] - 
+                        `FIXED_MULT(weight_update, input_data);
+                    
+                    input_error <= `FIXED_MULT(output_error, 
+                                  weights[weight_idx + output_addr * INPUT_SIZE]);
+                    
+                    if (weight_idx == INPUT_SIZE-1)
+                        state <= DONE;
+                    else
+                        weight_idx <= weight_idx + 1;
                 end
 
                 DONE: begin
                     fc_done <= 1;
-                    output_valid <= 0;
+                    if (output_error != 0)
+                        backprop_done <= 1;
                     state <= IDLE;
                 end
-
-                default: state <= IDLE;
             endcase
         end
     end
