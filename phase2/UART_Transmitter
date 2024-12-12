@@ -1,0 +1,73 @@
+module FPGA1_UART_Transmitter(
+    input wire clk,        // 50 MHz clock
+    input wire sw,         // Switch input
+    output wire tx         // UART TX output
+);
+
+    reg [7:0] data = 8'b0;     // Data to send
+    reg send = 0;              // Start transmission signal
+    wire tx_busy;              // UART busy signal
+
+    // State machine for sending UART data
+    always @(posedge clk) begin
+        if (sw && !send && !tx_busy) begin
+            data <= 8'b00110001; // ASCII '1'
+            send <= 1;          // Start sending
+        end else begin
+            send <= 0;          // Reset send signal
+        end
+    end
+
+    // Instantiate UART Transmitter
+    UART_Transmitter uart_tx (
+        .clk(clk),
+        .start(send),
+        .data(data),
+        .tx(tx),
+        .busy(tx_busy)
+    );
+
+endmodule
+
+// UART Transmitter Module
+module UART_Transmitter(
+    input wire clk,
+    input wire start,
+    input wire [7:0] data,
+    output reg tx,
+    output reg busy
+);
+    // UART parameters
+    parameter CLK_FREQ = 50000000;  // 50 MHz clock
+    parameter BAUD_RATE = 115200;
+    parameter BIT_PERIOD = CLK_FREQ / BAUD_RATE;
+
+    reg [3:0] bit_index = 0;
+    reg [15:0] clk_count = 0;
+    reg [9:0] shift_reg = 10'b0;
+
+    always @(posedge clk) begin
+        if (start && !busy) begin
+            // Initialize UART frame: Start bit (0), 8 data bits, Stop bit (1)
+            shift_reg <= {1'b1, data, 1'b0};
+            clk_count <= 0;
+            bit_index <= 0;
+            busy <= 1;
+            tx <= 0; // Start bit
+        end else if (busy) begin
+            if (clk_count == BIT_PERIOD - 1) begin
+                clk_count <= 0;
+                tx <= shift_reg[0];
+                shift_reg <= shift_reg >> 1;
+                bit_index <= bit_index + 1;
+
+                if (bit_index == 9) begin
+                    busy <= 0;
+                    tx <= 1; // Idle state
+                end
+            end else begin
+                clk_count <= clk_count + 1;
+            end
+        end
+    end
+endmodule
