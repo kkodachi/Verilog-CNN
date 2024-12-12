@@ -47,28 +47,36 @@ module conv2d #(
     reg [$clog2(INPUT_CHANNELS)-1:0] channel;
     reg [15:0] weight_update;
 
-    // Weight initialization
-    integer i;
-    initial begin
-        for (i = 0; i < INPUT_CHANNELS*WINDOW_SIZE*WINDOW_SIZE*NUM_NEURONS; i = i + 1)
-            kernel[i] = $random;
-    end
+    // Initialize kernel weights
+    reg [31:0] init_count;
+    reg init_done;
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            state <= IDLE;
+            state <= INIT_WEIGHTS;
             conv_done <= 0;
             backprop_done <= 0;
             output_valid <= 0;
+            init_count <= 0;
+            init_done <= 0;
+            kernel_addr <= 0;
+            win_i <= 0;
+            win_j <= 0;
+            channel <= 0;
+            conv_accumulator <= 0;
         end else begin
             case (state)
-                IDLE: begin
-                    if (enable) begin
+                INIT_WEIGHTS: begin
+                    if (!init_done) begin
+                        if (init_count < INPUT_CHANNELS*WINDOW_SIZE*WINDOW_SIZE*NUM_NEURONS) begin
+                            kernel[init_count] <= $random; // For simulation
+                            init_count <= init_count + 1;
+                        end else begin
+                            init_done <= 1;
+                            state <= IDLE;
+                        end
+                    end else if (enable) begin
                         state <= COMPUTE;
-                        conv_accumulator <= 0;
-                        win_i <= 0;
-                        win_j <= 0;
-                        channel <= 0;
                     end
                 end
 
@@ -81,18 +89,27 @@ module conv2d #(
                             win_j <= 0;
                             if (win_i == WINDOW_SIZE-1) begin
                                 win_i <= 0;
-                                state <= STORE;
-                            end else
+                                if (channel == INPUT_CHANNELS-1) begin
+                                    channel <= 0;
+                                    state <= STORE;
+                                end else begin
+                                    channel <= channel + 1;
+                                end
+                            end else begin
                                 win_i <= win_i + 1;
-                        end else
+                            end
+                        end else begin
                             win_j <= win_j + 1;
+                        end
+                        kernel_addr <= kernel_addr + 1;
                     end
                 end
 
                 STORE: begin
                     feature_map <= conv_accumulator[15:0];
                     output_valid <= 1;
-                    if (output_error != 0) // If error present, do backprop
+                    conv_accumulator <= 0;
+                    if (output_error != 0)
                         state <= BACKPROP;
                     else
                         state <= DONE;
@@ -102,19 +119,21 @@ module conv2d #(
                     // Update weights based on error
                     weight_update <= `FIXED_MULT(output_error, learning_rate);
                     kernel[kernel_addr] <= kernel[kernel_addr] - weight_update;
+                    kernel_addr <= kernel_addr + 1;
                     
                     if (kernel_addr == INPUT_CHANNELS*WINDOW_SIZE*WINDOW_SIZE*NUM_NEURONS-1)
                         state <= DONE;
-                    else
-                        kernel_addr <= kernel_addr + 1;
                 end
 
                 DONE: begin
                     conv_done <= 1;
+                    output_valid <= 0;
                     if (output_error != 0)
                         backprop_done <= 1;
                     state <= IDLE;
                 end
+
+                default: state <= IDLE;
             endcase
         end
     end
