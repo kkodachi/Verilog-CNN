@@ -1,0 +1,1 @@
+Decrease in execution time using CUDA: 0.15 sec -> 1 ms. Thus speedup is 150
