@@ -2,21 +2,20 @@
 #include <chrono>
 #include <cuda_runtime.h>
 
-// Declare the kernel function from convolution.cu
-void launchConvolutionKernel(float* input, float* kernel, float* output, 
+void startConvKernel(float* input, float* kernel, float* output, 
                              int inputWidth, int inputHeight, 
                              int kernelWidth, int kernelHeight);
 
 int main() {
     auto start = std::chrono::high_resolution_clock::now(); 
-    // Image and kernel dimensions
+    // img and kernel dimensions
     const int inputWidth = 5, inputHeight = 5;
     const int kernelWidth = 3, kernelHeight = 3;
 
     const int outputWidth = inputWidth - kernelWidth + 1;
     const int outputHeight = inputHeight - kernelHeight + 1;
 
-    // Allocate and initialize host memory
+    // init host and kernel inputs
     float hostInput[inputWidth * inputHeight] = {
         1, 2, 3, 4, 5,
         6, 7, 8, 9, 10,
@@ -31,23 +30,23 @@ int main() {
     };
     float hostOutput[outputWidth * outputHeight] = {0};
 
-    // Allocate device memory
+    // allocate device mem
     float *devInput, *devKernel, *devOutput;
     cudaMalloc(&devInput, inputWidth * inputHeight * sizeof(float));
     cudaMalloc(&devKernel, kernelWidth * kernelHeight * sizeof(float));
     cudaMalloc(&devOutput, outputWidth * outputHeight * sizeof(float));
 
-    // Copy data to device
+    // copy to device
     cudaMemcpy(devInput, hostInput, inputWidth * inputHeight * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(devKernel, hostKernel, kernelWidth * kernelHeight * sizeof(float), cudaMemcpyHostToDevice);
 
     
-    // Launch the kernel
-    launchConvolutionKernel(devInput, devKernel, devOutput, inputWidth, inputHeight, kernelWidth, kernelHeight);
+    // launch the kernel
+    startConvKernel(devInput, devKernel, devOutput, inputWidth, inputHeight, kernelWidth, kernelHeight);
     cudaDeviceSynchronize();
     
 
-    // Copy result back to host
+    // copy back to host
     cudaMemcpy(hostOutput, devOutput, outputWidth * outputHeight * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Print output
@@ -59,7 +58,7 @@ int main() {
     //     std::cout << std::endl;
     // }
 
-    // Free device memory
+    // free device mem
     cudaFree(devInput);
     cudaFree(devKernel);
     cudaFree(devOutput);
